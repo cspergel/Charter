@@ -23,10 +23,12 @@ classifiers = [
     "Topic :: Software Development :: Quality Assurance",
 ]
 
-# Fill in before the PyPI release:
-# authors = [{ name = "..." }]
-# [project.urls]
-# Repository = "https://github.com/.../charter"
+authors = [{ name = "cspergel" }]
+
+[project.urls]
+Repository = "https://github.com/cspergel/Charter"
+Issues = "https://github.com/cspergel/Charter/issues"
+Changelog = "https://github.com/cspergel/Charter/blob/main/CHANGELOG.md"
 
 [project.scripts]
 charter = "charter:main"
