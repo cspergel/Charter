@@ -29,12 +29,24 @@ decision as the reason if the edit would introduce a violation — so the agent
 self-corrects mid-task instead of failing CI an hour later. Only runs when the
 index is locally trusted (it executes asserts); otherwise it just steers.
 
-**Accountability record (`charter log`).** The ledger is now a tamper-evident
-hash chain — each entry pins the hash of the prior line. `charter log` prints
-the full who/what/when/why history (approvals, annotations, audit verdicts);
-`charter log <D-xxx>` filters to one decision; `charter log --verify` validates
-the chain and reports the exact entry where the record was edited after the
-fact.
+**Accountability record (`charter log`).** The ledger is a hash chain plus a
+committed head anchor (`.charter/ledger.head` = entry count + last-line hash).
+`charter log` prints the full who/what/when/why history; `charter log <D-xxx>`
+filters to one decision; `charter log --verify` validates the chain from
+genesis AND the head anchor — so in-place edits, reordering, truncation, prefix
+removal, and whole-file forgery are all caught (tampering requires rewriting the
+committed anchor too, i.e. a visible commit, same trust boundary as
+`charter.sha`).
+
+**Pre-release stress test.** A multi-agent adversarial sweep of all of the
+above found and fixed: a Windows case-insensitive bypass of the state-file
+guard (`.Charter/...`), crashes on non-UTF-8 mutation content and non-object
+hook payloads, stray empty dirs left after a deep-path sandbox mutation, an
+uncaught assert timeout in `verify`, a hash chain that missed truncation /
+prefix-removal / forgery, and a false "tamper" after a legitimate
+`digest --mark`. The hook also now applies the proposed edit once (not once per
+assert) and attributes failures correctly (only denies asserts the edit flips
+pass->fail, never a pre-existing violation).
 
 ## v0.4.3 — annotation-quality fixes from a third-party baseline
 

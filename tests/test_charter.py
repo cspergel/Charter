@@ -228,6 +228,58 @@ def test_log_shows_record_and_verifies_chain(repo):
     assert v.returncode == 0 and "intact" in v.stdout
 
 
+def test_log_verify_detects_truncation(repo):
+    settle(repo)
+    assert run(["approve", "--why", "second"], repo).returncode == 0
+    led = repo / ".charter" / "ledger.jsonl"
+    lines = led.read_text(encoding="utf-8").splitlines()
+    led.write_text(lines[0] + "\n", encoding="utf-8")   # drop the last entry
+    v = run(["log", "--verify"], repo)
+    assert v.returncode == 1 and "TAMPER" in v.stdout
+
+
+def test_log_verify_survives_digest_mark(repo):
+    """A legitimate `digest --mark` rewrites lines but must re-chain, so verify
+    stays intact (no false tamper)."""
+    settle(repo)
+    assert run(["log", "--verify"], repo).returncode == 0
+    run(["digest", "--mark"], repo)
+    v = run(["log", "--verify"], repo)
+    assert v.returncode == 0 and "intact" in v.stdout
+
+
+def test_mutation_target_rejects_state_and_case_variants(repo):
+    assert g.safe_mutation_target(repo, ".charter/charter.sha") is None
+    assert g.safe_mutation_target(repo, ".Charter/charter.sha") is None  # NTFS case
+    assert g.safe_mutation_target(repo, "CHARTER.md") is None
+    assert g.safe_mutation_target(repo, "../escape.txt") is None
+    assert g.safe_mutation_target(repo, None) is None
+    assert g.safe_mutation_target(repo, "") is None
+    assert g.safe_mutation_target(repo, "src/ok.py") is not None
+
+
+def test_run_attack_cleans_created_dirs_and_bad_content(repo):
+    d = {"kind": "assert", "target": '! grep -rqE "supabase" .', "tripwire": "",
+         "watch": []}
+    # deep new path -> all created dirs removed afterward
+    g.run_attack(repo, d, {"file": "a/b/c.py", "mode": "create",
+                           "content": "supabase\n"})
+    assert not (repo / "a").exists()
+    # non-encodable content -> skipped, not a crash
+    verdict, _ = g.run_attack(repo, d, {"file": "x.py", "mode": "create",
+                                        "content": "\ud800"})
+    assert verdict == "skipped"
+    assert not (repo / "x.py").exists()
+
+
+def test_hook_survives_non_object_payload(repo):
+    _approve_assert_repo(repo)
+    for bad in ("null", "[]", "42", "not json", ""):
+        r = run(["hook", "--file"], repo, stdin=bad)
+        assert r.returncode == 0
+        assert "Traceback" not in r.stderr
+
+
 def test_log_verify_detects_tamper(repo):
     settle(repo)
     assert run(["approve", "--why", "second approval"], repo).returncode == 0

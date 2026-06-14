@@ -47,6 +47,7 @@ LLM backends (annotate + audit), in order:
 """
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -60,6 +61,7 @@ __version__ = "0.5.0"
 CHARTER_FILE = "CHARTER.md"
 STATE_DIR = ".charter"
 LEDGER = "ledger.jsonl"
+LEDGER_HEAD = "ledger.head"   # committed anchor: count:hash of the last entry
 ANNOTATE_MODEL = os.environ.get("CHARTER_ANNOTATE_MODEL", "claude-sonnet-4-6")
 AUDIT_MODEL = os.environ.get("CHARTER_AUDIT_MODEL", "claude-haiku-4-5")
 KINDS = ("structure", "type", "test", "lint", "assert", "supervise")
@@ -130,22 +132,34 @@ def _line_hash(s: str) -> str:
     import hashlib
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
 
+def ledger_lines(rt: Path):
+    lp = rt / STATE_DIR / LEDGER
+    if not lp.exists():
+        return []
+    return [l for l in lp.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+def write_ledger_head(rt: Path):
+    """Anchor the chain: record entry count + last-line hash in a COMMITTED file.
+    Truncation, prefix-removal, and whole-file forgery all change one of these,
+    so they can't pass verify without also rewriting this anchor — which, like
+    charter.sha, requires a visible commit."""
+    lines = ledger_lines(rt)
+    head = _line_hash(lines[-1]) if lines else "empty"
+    (rt / STATE_DIR / LEDGER_HEAD).write_text(
+        f"{len(lines)}:{head}\n", encoding="utf-8")
+
 def ledger_append(rt: Path, entry: dict):
     d = rt / STATE_DIR
     d.mkdir(exist_ok=True)
     entry["ts"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     entry.setdefault("reviewed", False)
     lp = d / LEDGER
-    # hash-chain: each entry pins the hash of the prior line, so editing or
-    # removing any past entry breaks the chain (`charter log --verify` detects it)
-    prev = "genesis"
-    if lp.exists():
-        existing = lp.read_text(encoding="utf-8").splitlines()
-        if existing:
-            prev = _line_hash(existing[-1])
-    entry["prev"] = prev
+    # hash-chain: each entry pins the hash of the prior line (blanks ignored)
+    lines = ledger_lines(rt)
+    entry["prev"] = _line_hash(lines[-1]) if lines else "genesis"
     with open(lp, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
+    write_ledger_head(rt)
 
 def llm_call(prompt: str, model: str, max_tokens: int = 1500):
     """Returns model text or None if no backend is configured/working."""
@@ -934,57 +948,86 @@ different file/extension. Respond with ONLY a JSON object, no fences:
 "content":"<minimal text that violates the decision>",\
 "note":"<one line: how this evades the enforcer>"}}"""
 
-def _within_repo(rt: Path, rel: str) -> bool:
+def safe_mutation_target(rt: Path, rel):
+    """Resolve a sandbox-mutation path, rejecting anything unsafe: a non-str or
+    empty value, a path outside the repo, the CHARTER.md index, Charter's own
+    state dir (compared case-insensitively so `.Charter` can't slip past on a
+    case-insensitive filesystem), or an existing directory. Returns Path|None."""
+    if not isinstance(rel, str):
+        return None
+    rel = rel.strip().lstrip("/").replace("\\", "/")
+    if not rel:
+        return None
     try:
-        return (rt / rel).resolve().is_relative_to(rt.resolve())
+        rtr = rt.resolve()
+        p = (rt / rel).resolve()
+        sub = p.relative_to(rtr).as_posix().lower()
     except (OSError, ValueError):
-        return False
+        return None
+    if (sub == CHARTER_FILE.lower() or sub == STATE_DIR.lower()
+            or sub.startswith(STATE_DIR.lower() + "/")):
+        return None
+    if p.is_dir():
+        return None
+    return p
+
+@contextlib.contextmanager
+def _mutated(rt: Path, target: Path, body: bytes, mode: str):
+    """Write `body` to target with the mutation in place for the duration of the
+    block, then ALWAYS restore — original bytes (or deletion) plus every parent
+    dir we created. `body` is bytes so the caller validates encoding first."""
+    existed = target.exists()
+    original = target.read_bytes() if existed else None
+    created, anc = [], target.parent
+    while not anc.exists():
+        created.append(anc)            # deepest first
+        anc = anc.parent
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if mode == "append" and original is not None:
+            target.write_bytes(original + b"\n" + body)
+        else:
+            target.write_bytes(body)
+        _WALK_CACHE.clear()
+        yield
+    finally:
+        if original is not None:
+            target.write_bytes(original)
+        elif target.exists():
+            target.unlink()
+        for d in created:
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+        _WALK_CACHE.clear()
 
 def saboteur_attack(rt: Path, d: dict):
     """Ask an LLM to craft a violation that evades this decision's enforcer."""
     prompt = SABOTEUR_PROMPT.format(title=d["title"], target=d["target"],
                                     files=annotate_manifest(rt))
     m = extract_json(llm_call(prompt, AUDIT_MODEL, max_tokens=600))
-    if not isinstance(m, dict) or "file" not in m or "content" not in m:
+    if (not isinstance(m, dict) or not isinstance(m.get("file"), str)
+            or not m["file"].strip() or "content" not in m):
         return None
     return m
 
 def run_attack(rt: Path, d: dict, m: dict):
     """Apply the saboteur's mutation, run THIS decision's assert, then ALWAYS
     restore the repo. Returns ('defended'|'bypassed'|'skipped', detail)."""
-    rel = str(m.get("file", "")).strip().lstrip("/").replace("\\", "/")
-    if not rel or not _within_repo(rt, rel) or ".charter" in rel:
-        return "skipped", "saboteur named an out-of-repo or state path"
-    target = rt / rel
-    if target.is_dir():
-        return "skipped", f"{rel} is a directory"
-    existed = target.exists()
-    original = target.read_bytes() if existed else None
-    made_parent = not target.parent.exists()
+    target = safe_mutation_target(rt, m.get("file"))
+    if target is None:
+        return "skipped", "saboteur named an unsafe or out-of-repo path"
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
         body = str(m.get("content", "")).encode("utf-8")
-        if m.get("mode") == "append" and original is not None:
-            target.write_bytes(original + b"\n" + body)
-        else:
-            target.write_bytes(body)
-        _WALK_CACHE.clear()
+    except (UnicodeEncodeError, AttributeError):
+        return "skipped", "mutation content is not encodable"
+    with _mutated(rt, target, body, m.get("mode")):
         try:
             caught = run_shell(rt, d["target"]).returncode != 0
         except subprocess.TimeoutExpired:
             return "skipped", "assert timed out"
-        return ("defended" if caught else "bypassed"), str(m.get("note", ""))
-    finally:
-        if original is not None:
-            target.write_bytes(original)
-        elif target.exists():
-            target.unlink()
-        if made_parent:
-            try:
-                target.parent.rmdir()
-            except OSError:
-                pass
-        _WALK_CACHE.clear()
+    return ("defended" if caught else "bypassed"), str(m.get("note", ""))
 
 def proposed_content(ti: dict, fp: str):
     """Reconstruct the full file content a Write/Edit/MultiEdit tool call would
@@ -1039,8 +1082,12 @@ def cmd_verify(args):
                 "(CHARTER_LLM_CMD or ANTHROPIC_API_KEY)")
         bypassed = 0
         for did, d in asserts:
-            if run_shell(rt, d["target"]).returncode != 0:
-                print(f"  skip {did} — assert already failing; fix it first")
+            try:
+                if run_shell(rt, d["target"]).returncode != 0:
+                    print(f"  skip {did} — assert already failing; fix it first")
+                    continue
+            except subprocess.TimeoutExpired:
+                print(f"  skip {did} — assert timed out")
                 continue
             m = saboteur_attack(rt, d)
             if not m:
@@ -1262,16 +1309,24 @@ def cmd_digest(args):
         print(f"  {e.get('ts','?'):20} {e.get('decision', e.get('action','')):8} "
               f"{e.get('verdict',''):9} — {e.get('reason','')}{flag}")
     if args.mark:
-        out = []
+        # marking rewrites lines (reviewed: false->true), so RE-CHAIN as we go:
+        # each rewritten entry re-pins the hash of the prior FINAL line, keeping
+        # `log --verify` valid after a legitimate review (no false tamper).
+        out, expected = [], "genesis"
         for raw, e in rows:
             if e is None:
                 out.append(raw)  # preserve foreign/corrupt lines verbatim
             else:
                 e["reviewed"] = True
-                out.append(json.dumps(e))
+                if "prev" in e:
+                    e["prev"] = expected
+                raw = json.dumps(e)
+                out.append(raw)
+            expected = _line_hash(raw)
         tmp = lp.with_name(lp.name + f".{os.getpid()}.tmp")
         tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
         os.replace(tmp, lp)
+        write_ledger_head(rt)  # line texts changed -> re-anchor the head
         dropped = sum(1 for _, e in rows if e is None)
         note = f" ({dropped} unparseable line(s) left intact)" if dropped else ""
         print(f"\nmarked {len(fresh)} entries reviewed{note}")
@@ -1298,11 +1353,15 @@ def cmd_hook(args):
         payload = json.load(sys.stdin)
     except Exception:
         payload = {}
+    if not isinstance(payload, dict):
+        sys.exit(0)  # null/list/scalar payloads: nothing to do, never crash
     rt = root()
     if sentinel_ok(rt) is not True:
         sys.exit(0)  # an unapproved or tampered index must not steer agents
     if args.file:
-        ti = payload.get("tool_input") or {}
+        ti = payload.get("tool_input")
+        if not isinstance(ti, dict):
+            sys.exit(0)
         fp = ti.get("file_path") or ""
         if not fp:
             sys.exit(0)
@@ -1311,26 +1370,39 @@ def cmd_hook(args):
             rel = Path(fp).resolve().relative_to(rt.resolve()).as_posix()
         except ValueError:
             sys.exit(0)
-        # IN-LOOP ENFORCEMENT: would this edit introduce a violation? Test the
-        # proposed content against each assert on a sandboxed copy (restored),
-        # and DENY before it lands. Only when locally trusted (it runs shell).
+        # IN-LOOP ENFORCEMENT: would this edit introduce a violation? Apply the
+        # proposed content ONCE to a sandboxed copy, run every assert, then for
+        # any that fail re-check WITHOUT the edit — so we only deny asserts the
+        # edit actually FLIPS (pass -> fail), never a pre-existing violation,
+        # and we write the file once instead of once per assert.
         new_content = proposed_content(ti, fp)
+        target = safe_mutation_target(rt, rel) if new_content is not None else None
         may_run = (local_trust_ok(rt)
                    or os.environ.get("CHARTER_TRUST_ASSERTS") == "1")
-        if new_content is not None and may_run:
-            violated = []
-            for did, d in decisions.items():
-                if d["kind"] != "assert" or not d["target"]:
-                    continue
+        body = None
+        if target is not None and may_run:
+            try:
+                body = new_content.encode("utf-8")
+            except (UnicodeEncodeError, AttributeError):
+                body = None
+        if body is not None:
+            asserts = [(did, d) for did, d in decisions.items()
+                       if d["kind"] == "assert" and d["target"]]
+            failed_now = []
+            with _mutated(rt, target, body, "create"):
+                for did, d in asserts:
+                    try:
+                        if run_shell(rt, d["target"]).returncode != 0:
+                            failed_now.append((did, d))
+                    except subprocess.TimeoutExpired:
+                        continue
+            violated = []  # of the asserts failing WITH the edit, keep only
+            for did, d in failed_now:  # those that PASS without it (edit caused it)
                 try:
-                    if run_shell(rt, d["target"]).returncode != 0:
-                        continue  # already failing; don't attribute it to this edit
+                    if run_shell(rt, d["target"]).returncode == 0:
+                        violated.append((did, d))
                 except subprocess.TimeoutExpired:
                     continue
-                verdict, _ = run_attack(
-                    rt, d, {"file": rel, "mode": "create", "content": new_content})
-                if verdict == "defended":  # the assert caught the proposed content
-                    violated.append((did, d))
             if violated:
                 why = "; ".join(f"[{did}] {d['title']}" for did, d in violated)
                 print(json.dumps({"hookSpecificOutput": {
@@ -1383,22 +1455,38 @@ def cmd_log(args):
     if not lp.exists():
         print("charter log: no ledger yet")
         return
-    raw = lp.read_text(encoding="utf-8").splitlines()
+    raw = ledger_lines(rt)   # blank lines ignored (no false positives)
     if args.verify:
-        for i in range(1, len(raw)):
+        # walk the chain from genesis, so entry 0 and any prefix removal are
+        # validated too (not just adjacent links from index 1)
+        expected = "genesis"
+        for i, ln in enumerate(raw):
             try:
-                e = json.loads(raw[i])
+                e = json.loads(ln)
             except Exception:
+                expected = _line_hash(ln)
                 continue
-            if "prev" not in e:
-                continue  # legacy entry written before chaining; skip
-            if e["prev"] != _line_hash(raw[i - 1]):
+            if "prev" in e and e["prev"] != expected:
                 print(f"charter log: TAMPER DETECTED at entry {i + 1} — the "
-                      f"hash chain is broken; the record was edited after "
-                      f"the fact")
+                      f"hash chain is broken; the record was edited or "
+                      f"reordered after the fact")
                 sys.exit(1)
-        print(f"charter log: ledger intact — {len(raw)} entries, hash chain "
-              f"verified")
+            expected = _line_hash(ln)
+        # head anchor: catches truncation / whole-file forgery, which an
+        # internally-consistent chain alone cannot
+        hp = rt / STATE_DIR / LEDGER_HEAD
+        if hp.exists():
+            want = hp.read_text(encoding="utf-8").strip()
+            head = _line_hash(raw[-1]) if raw else "empty"
+            if want != f"{len(raw)}:{head}":
+                print(f"charter log: TAMPER DETECTED — entry count or head "
+                      f"hash does not match the committed anchor "
+                      f"({LEDGER_HEAD}); entries were added, removed, or "
+                      f"replaced after the fact")
+                sys.exit(1)
+        print(f"charter log: ledger intact — {len(raw)} entries"
+              + (", chain + committed head verified" if hp.exists()
+                 else ", chain verified (no committed head anchor)"))
         return
     shown = 0
     for ln in raw:
