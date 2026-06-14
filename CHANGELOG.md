@@ -21,6 +21,21 @@ right now, instead of trusting that it is.
 `verify` runs asserts (and `--adversarial` writes-then-restores files), so it
 requires the same local approval as `check`.
 
+**In-loop enforcement (PreToolUse).** `charter hook --file` now *blocks* a
+violating edit before it lands, not just steers. It reconstructs the content a
+Write/Edit/MultiEdit would produce, tests it against each assert on a sandboxed
+copy (always restored), and returns `permissionDecision: deny` with the
+decision as the reason if the edit would introduce a violation — so the agent
+self-corrects mid-task instead of failing CI an hour later. Only runs when the
+index is locally trusted (it executes asserts); otherwise it just steers.
+
+**Accountability record (`charter log`).** The ledger is now a tamper-evident
+hash chain — each entry pins the hash of the prior line. `charter log` prints
+the full who/what/when/why history (approvals, annotations, audit verdicts);
+`charter log <D-xxx>` filters to one decision; `charter log --verify` validates
+the chain and reports the exact entry where the record was edited after the
+fact.
+
 ## v0.4.3 — annotation-quality fixes from a third-party baseline
 
 A baseline test on a real repo we didn't write (Flask's `docs/design.rst`,

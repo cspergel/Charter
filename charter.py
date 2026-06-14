@@ -126,12 +126,25 @@ def die(msg, code=1):
     print(f"charter: {msg}", file=sys.stderr)
     sys.exit(code)
 
+def _line_hash(s: str) -> str:
+    import hashlib
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
+
 def ledger_append(rt: Path, entry: dict):
     d = rt / STATE_DIR
     d.mkdir(exist_ok=True)
     entry["ts"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     entry.setdefault("reviewed", False)
-    with open(d / LEDGER, "a", encoding="utf-8") as f:
+    lp = d / LEDGER
+    # hash-chain: each entry pins the hash of the prior line, so editing or
+    # removing any past entry breaks the chain (`charter log --verify` detects it)
+    prev = "genesis"
+    if lp.exists():
+        existing = lp.read_text(encoding="utf-8").splitlines()
+        if existing:
+            prev = _line_hash(existing[-1])
+    entry["prev"] = prev
+    with open(lp, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
 
 def llm_call(prompt: str, model: str, max_tokens: int = 1500):
@@ -973,6 +986,30 @@ def run_attack(rt: Path, d: dict, m: dict):
                 pass
         _WALK_CACHE.clear()
 
+def proposed_content(ti: dict, fp: str):
+    """Reconstruct the full file content a Write/Edit/MultiEdit tool call would
+    produce, so a PreToolUse hook can test it BEFORE it lands. None if it can't
+    be reconstructed (then the hook only steers, never blocks)."""
+    if "content" in ti:                                   # Write
+        return str(ti["content"])
+    p = Path(fp)
+    try:
+        cur = p.read_text(encoding="utf-8") if p.exists() else ""
+    except OSError:
+        return None
+    if "old_string" in ti and "new_string" in ti:        # Edit
+        if ti["old_string"] not in cur:
+            return None
+        return cur.replace(ti["old_string"], ti["new_string"], 1)
+    if isinstance(ti.get("edits"), list):                 # MultiEdit
+        for e in ti["edits"]:
+            o, n = e.get("old_string"), e.get("new_string")
+            if o is None or o not in cur:
+                return None
+            cur = cur.replace(o, n, 1)
+        return cur
+    return None
+
 def cmd_verify(args):
     """Proof-carrying governance: prove each deterministic decision is actually
     enforceable RIGHT NOW. Default: tripwire proof. --adversarial: an LLM
@@ -1265,14 +1302,47 @@ def cmd_hook(args):
     if sentinel_ok(rt) is not True:
         sys.exit(0)  # an unapproved or tampered index must not steer agents
     if args.file:
-        fp = (payload.get("tool_input") or {}).get("file_path") or ""
+        ti = payload.get("tool_input") or {}
+        fp = ti.get("file_path") or ""
         if not fp:
             sys.exit(0)
         decisions, _ = parse_intent(rt, must_exist=False)
         try:
-            rel = Path(fp).resolve().relative_to(rt).as_posix()
+            rel = Path(fp).resolve().relative_to(rt.resolve()).as_posix()
         except ValueError:
             sys.exit(0)
+        # IN-LOOP ENFORCEMENT: would this edit introduce a violation? Test the
+        # proposed content against each assert on a sandboxed copy (restored),
+        # and DENY before it lands. Only when locally trusted (it runs shell).
+        new_content = proposed_content(ti, fp)
+        may_run = (local_trust_ok(rt)
+                   or os.environ.get("CHARTER_TRUST_ASSERTS") == "1")
+        if new_content is not None and may_run:
+            violated = []
+            for did, d in decisions.items():
+                if d["kind"] != "assert" or not d["target"]:
+                    continue
+                try:
+                    if run_shell(rt, d["target"]).returncode != 0:
+                        continue  # already failing; don't attribute it to this edit
+                except subprocess.TimeoutExpired:
+                    continue
+                verdict, _ = run_attack(
+                    rt, d, {"file": rel, "mode": "create", "content": new_content})
+                if verdict == "defended":  # the assert caught the proposed content
+                    violated.append((did, d))
+            if violated:
+                why = "; ".join(f"[{did}] {d['title']}" for did, d in violated)
+                print(json.dumps({"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason":
+                        f"This edit to {rel} would violate {why}. Fix the code "
+                        f"to comply, or surface the conflict and propose editing "
+                        f"CHARTER.md — do not silently violate a binding "
+                        f"decision."}}))
+                sys.exit(0)
+        # otherwise, steer: inject the decisions whose watch scope covers the file
         hits = [(did, d) for did, d in decisions.items()
                 if d.get("watch") and any(glob_match(rel, g) for g in d["watch"])]
         if not hits:
@@ -1302,6 +1372,53 @@ def cmd_hook(args):
           "decision, say so and propose editing CHARTER.md rather than "
           "silently violating it.")
     sys.exit(0)
+
+def cmd_log(args):
+    """The accountability record: the append-only history of every approval,
+    annotation, audit verdict, and verify result — who/what/when/why. With
+    --verify, checks the tamper-evident hash chain. Optional ID filters to one
+    decision's history."""
+    rt = root()
+    lp = rt / STATE_DIR / LEDGER
+    if not lp.exists():
+        print("charter log: no ledger yet")
+        return
+    raw = lp.read_text(encoding="utf-8").splitlines()
+    if args.verify:
+        for i in range(1, len(raw)):
+            try:
+                e = json.loads(raw[i])
+            except Exception:
+                continue
+            if "prev" not in e:
+                continue  # legacy entry written before chaining; skip
+            if e["prev"] != _line_hash(raw[i - 1]):
+                print(f"charter log: TAMPER DETECTED at entry {i + 1} — the "
+                      f"hash chain is broken; the record was edited after "
+                      f"the fact")
+                sys.exit(1)
+        print(f"charter log: ledger intact — {len(raw)} entries, hash chain "
+              f"verified")
+        return
+    shown = 0
+    for ln in raw:
+        try:
+            e = json.loads(ln)
+        except Exception:
+            continue
+        ident = e.get("decision") or e.get("action") or "-"
+        if args.id:
+            added = e.get("added", [])
+            if args.id != e.get("decision") and not any(args.id in a for a in added):
+                continue
+        ts = e.get("ts", "?")
+        verdict = e.get("verdict", "?")
+        reason = " ".join(str(e.get("reason", "")).split())[:80]
+        print(f"  {ts}  {verdict:9} {ident:8} {reason}")
+        shown += 1
+    if not shown:
+        print(f"charter log: no record entries"
+              + (f" for {args.id}" if args.id else ""))
 
 def cmd_explain(args):
     """Human-facing story of one decision: provenance, enforcement,
@@ -1532,6 +1649,14 @@ def main():
     g = sub.add_parser("graph", help="derived citation graph (Mermaid)")
     g.add_argument("--json", action="store_true")
     g.set_defaults(fn=cmd_graph)
+
+    lg = sub.add_parser("log", help="the accountability record; --verify checks "
+                                    "the tamper-evident hash chain")
+    lg.add_argument("id", nargs="?", metavar="ID",
+                    help="filter to one decision's history")
+    lg.add_argument("--verify", action="store_true",
+                    help="verify the ledger's tamper-evident hash chain")
+    lg.set_defaults(fn=cmd_log)
 
     dg = sub.add_parser("digest", help="batch-review the ledger")
     dg.add_argument("--mark", action="store_true")

@@ -107,6 +107,7 @@ charter check                # deterministic, free — pre-commit + CI
 charter verify               # prove each enforcer is actually live, not theater
 charter verify --adversarial # an LLM saboteur tries to bypass each enforcer
 charter audit                # judged pass over supervise-tier (PR-time)
+charter log [D-001] [--verify]  # the accountability record (tamper-evident)
 charter digest [--mark]      # batch-review everything the system did
 charter trace D-001          # everything that traces to a decision
 charter graph [--json]       # the derived graph (Mermaid / machine-readable)
@@ -158,8 +159,10 @@ charter install-hook         # pre-commit hook + Claude Code settings block
    everything AMBIGUOUS, never crashes.
 5. **Steer** — one optional SessionStart hook injects the whole index
    (~15 one-liners, a few hundred tokens, once per session) plus the
-   citation protocol. No gates: agents stay in their native loop — cite the
-   symbol, keep `check` green.
+   citation protocol. The PreToolUse hook (`hook --file`) goes further: it
+   **blocks an edit before it lands** if the proposed content would trip an
+   assert, returning the decision as the reason so the agent self-corrects
+   mid-task — governance inside the loop, not just post-hoc in CI.
 
 ## LLM backends
 

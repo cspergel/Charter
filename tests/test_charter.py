@@ -176,6 +176,70 @@ def test_verify_requires_local_approval(repo):
     assert r.returncode == 1 and "approve" in (r.stdout + r.stderr)
 
 
+def test_hook_blocks_violating_edit(repo):
+    """In-loop enforcement: a PreToolUse edit that would trip an assert is
+    denied before it lands, and the sandbox is restored."""
+    _approve_assert_repo(repo)
+    new = repo / "src" / "new.py"
+    payload = json.dumps({"tool_input": {
+        "file_path": str(new), "content": "import supabase\n"}})
+    r = run(["hook", "--file"], repo, stdin=payload)
+    out = json.loads(r.stdout)
+    hso = out["hookSpecificOutput"]
+    assert hso["permissionDecision"] == "deny"
+    assert "D-001" in hso["permissionDecisionReason"]
+    assert not new.exists()   # sandbox restored
+
+
+def test_hook_allows_compliant_edit(repo):
+    _approve_assert_repo(repo)
+    new = repo / "src" / "new.py"
+    payload = json.dumps({"tool_input": {
+        "file_path": str(new), "content": "import sqlite3\n"}})
+    r = run(["hook", "--file"], repo, stdin=payload)
+    if r.stdout.strip():
+        out = json.loads(r.stdout)
+        assert out["hookSpecificOutput"]["permissionDecision"] != "deny"
+    assert not new.exists()
+
+
+def test_hook_does_not_block_untrusted_repo(repo):
+    """A cloned-but-not-locally-approved repo must not run its asserts from the
+    hook — it steers at most, never executes."""
+    (repo / "CHARTER.md").write_text(
+        '[D-001] No hosted backend -> assert: ! grep -rqE "supabase" src '
+        '!! echo supabase | grep -qE "supabase"\n', encoding="utf-8")
+    d = repo / ".charter"; d.mkdir()
+    (d / "charter.sha").write_text(g.intent_hash(repo) + "\n", encoding="utf-8")
+    new = repo / "src" / "new.py"
+    payload = json.dumps({"tool_input": {
+        "file_path": str(new), "content": "import supabase\n"}})
+    r = run(["hook", "--file"], repo, stdin=payload)
+    if r.stdout.strip():
+        out = json.loads(r.stdout)
+        assert out["hookSpecificOutput"]["permissionDecision"] != "deny"
+
+
+def test_log_shows_record_and_verifies_chain(repo):
+    settle(repo)
+    r = run(["log"], repo)
+    assert "APPROVED" in r.stdout
+    v = run(["log", "--verify"], repo)
+    assert v.returncode == 0 and "intact" in v.stdout
+
+
+def test_log_verify_detects_tamper(repo):
+    settle(repo)
+    assert run(["approve", "--why", "second approval"], repo).returncode == 0
+    led = repo / ".charter" / "ledger.jsonl"
+    lines = led.read_text(encoding="utf-8").splitlines()
+    e = json.loads(lines[0]); e["reason"] = "HACKED"
+    lines[0] = json.dumps(e)
+    led.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    v = run(["log", "--verify"], repo)
+    assert v.returncode == 1 and "TAMPER" in v.stdout
+
+
 def test_unapproved_index_fails(repo):
     (repo / "CHARTER.md").write_text(INTENT)
     r = run(["check"], repo)
