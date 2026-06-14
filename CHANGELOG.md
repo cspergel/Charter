@@ -1,15 +1,23 @@
 # Changelog
 
-## v0.4.3 — annotate proposes tripwire proofs
+## v0.4.3 — annotation-quality fixes from a third-party baseline
 
-A baseline test on a third-party repo (Flask's `docs/design.rst`, graded by an
-independent reviewer) found that `annotate` produced assert enforcers with no
-`!! tripwire` proof — so a "never add a database layer" guard could silently
-rot if someone edited the regex, passing green while detecting nothing. The
-annotate prompt now requires a tripwire for every assert: a probe that pipes a
-known violation sample into the same detector and must exit 0. Verified on
-Flask — every generated assert now ships a proof, and `doctor` reports "all
-asserts carry tripwire proofs."
+A baseline test on a real repo we didn't write (Flask's `docs/design.rst`,
+graded by an independent reviewer) drove two fixes:
+
+- **annotate now proposes a `!! tripwire` proof for every assert.** Previously
+  a generated "never add a database layer" guard shipped with no proof, so it
+  could silently rot if someone edited the regex — passing green while
+  detecting nothing. The prompt now requires a tripwire per assert: a probe
+  that pipes a known violation sample into the same detector and must exit 0.
+  Verified on Flask — every assert ships a proof and `doctor` reports "all
+  asserts carry tripwire proofs."
+- **`type: file#Class.method` targets resolve to the member.** The symbol
+  scanner matched the literal dotted string, so a reasonable suggestion like
+  `#Flask.wsgi_app` false-failed as enforcer rot (source defines `def
+  wsgi_app`, never `Flask.wsgi_app`). A dotted target now resolves to its final
+  member; whole-token matching for plain symbols is unchanged. This turned the
+  Flask charter from red (2 false failures) to green.
 
 ## v0.4.2 — trust bound to repo instance (adversarial review)
 

@@ -330,8 +330,15 @@ def verify_enforcer(rt: Path, d: dict):
                 body = fh.read(MAX_SCAN_BYTES)  # cap: don't load huge artifacts
         except OSError as e:
             return f"cannot read enforcer target {path}: {e}"
-        # whole-token match: #Envelope must not stay "live" via EnvelopeFactory
-        if not re.search(r"(?<!\w)" + re.escape(symbol) + r"(?!\w)", body):
+        # whole-token match: #Envelope must not stay "live" via EnvelopeFactory.
+        # A dotted target (#Class.method) resolves to its final member, since
+        # source defines `def method` / `class`, never the literal `Class.method`
+        # — so a reasonable annotate suggestion isn't a false "enforcer rotted".
+        candidates = [symbol]
+        if "." in symbol:
+            candidates.append(symbol.rsplit(".", 1)[-1])
+        if not any(re.search(r"(?<!\w)" + re.escape(c) + r"(?!\w)", body)
+                   for c in candidates):
             return f"symbol '{symbol}' not found in {path} (enforcer rotted?)"
     return None
 

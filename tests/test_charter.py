@@ -401,6 +401,26 @@ def test_audit_reason_cannot_forge_verdict_lines(repo):
     assert not forged
 
 
+def test_type_enforcer_resolves_dotted_member_symbol(repo):
+    """A `type: file#Class.method` target must resolve to the member's
+    definition (`def method` / `class`), not require the literal dotted string
+    — otherwise a reasonable annotate suggestion false-fails as enforcer rot."""
+    (repo / "app.py").write_text(
+        "class Flask:\n    def wsgi_app(self):\n        pass\n", encoding="utf-8")
+    ok = {"kind": "type", "target": "app.py#Flask.wsgi_app", "title": "x",
+          "tripwire": "", "watch": []}
+    assert g.verify_enforcer(repo, ok) is None
+    # a genuinely absent member still fails
+    rot = {"kind": "type", "target": "app.py#Flask.nope", "title": "x",
+           "tripwire": "", "watch": []}
+    assert g.verify_enforcer(repo, rot) is not None
+    # non-dotted whole-token behavior unchanged: #Env must not match EnvFactory
+    (repo / "t.py").write_text("class EnvFactory: pass\n", encoding="utf-8")
+    sub = {"kind": "type", "target": "t.py#Env", "title": "x",
+           "tripwire": "", "watch": []}
+    assert g.verify_enforcer(repo, sub) is not None
+
+
 def test_self_certifying_tripwire_is_flagged(repo):
     # assert passes (grep of a present file), so the only thing that can flag
     # this is trivial_tripwire firing — no exit-code escape hatch
