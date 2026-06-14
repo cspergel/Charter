@@ -213,6 +213,48 @@ For non-hook agents (Cursor, aider), put this in `AGENTS.md`/`.cursorrules`:
   agents to ask "what connects to what," but no verdict ever comes from
   graph topology — authority lives in things that can't be argued with.
 
+## FAQ
+
+**Isn't this just a pre-commit hook that runs grep?**
+At the deterministic layer, yes — and that's the point. A grep that can't be
+argued with beats an LLM that can be talked out of a verdict. Charter's value
+isn't a cleverer check; it's turning prose decisions into checks at all,
+keeping them in sync with the code via citations, and proving the checks aren't
+vacuous (tripwires). The grep is a feature, not an embarrassment.
+
+**Why not Spec Kit / OpenSpec / Kiro?**
+Those govern code *generation* — write a spec, then generate from it. They're
+out of the loop the moment a later change quietly contradicts the original
+design, which is where drift actually accrues. Charter governs the repo from
+then on, on every commit. They compose: scaffold with whatever you like, keep
+it true with Charter.
+
+**An LLM wrote my enforcement rules — why would I trust that?**
+You don't trust it — you review it. `annotate` only *proposes*; nothing takes
+effect until you read CHARTER.md and `approve` it, exactly like reading code
+you're about to run. At enforcement time there's no LLM in the loop: `check` is
+deterministic shell. The model proposes, you ratify, grep decides.
+
+**What stops an agent from editing CHARTER.md, or weakening an enforcer, to make
+check pass?**
+Any change to CHARTER.md fails `check` until a human runs `approve` (a hashed,
+journaled gate) — so an agent can't quietly rewrite the constitution. The agent
+instructions say *fix the code, never the enforcer*, and a weakened assert trips
+its tripwire (the proof that it can still catch a known violation). Tampering is
+visible, not silent.
+
+**Won't grep-based asserts be brittle and false-positive?**
+Some will — which is why the ladder exists. Push fragile checks up to `type`,
+`test`, or `lint`, where the language and your test runner do the work; reserve
+`assert` for things that genuinely are a grep. Tripwires flag asserts that have
+quietly stopped detecting anything, so a brittle check fails loudly rather than
+passing forever.
+
+**Does it lock me into Claude?**
+No. Any backend that reads a prompt on stdin works (`CHARTER_LLM_CMD`), the
+Anthropic API works, and you can skip the LLM entirely and write CHARTER.md by
+hand — `check` never calls a model.
+
 ## Known limits
 
 - **`check` executes shell from CHARTER.md.** The trust gate means a cloned
