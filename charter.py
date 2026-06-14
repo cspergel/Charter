@@ -554,6 +554,14 @@ prove the file covers the decision. So either bind the target to a real \
 or — usually better — choose an `assert:` that greps the IMPLEMENTATION for \
 the behavior. Avoid file-only test targets; they pass vacuously.
 
+If the document is a how-to / procedural guide (build commands, file maps, \
+contributor steps) rather than a statement of binding DESIGN decisions, \
+extract FEW or ZERO decisions — do not manufacture governance from it. A \
+"this file or directory exists" check (e.g. `ls dir | grep -qx file`) is NOT \
+a binding contract: it breaks on a harmless rename and catches no design \
+violation. Skip such file-existence trivia; only extract contracts the code \
+could meaningfully VIOLATE.
+
 For assert enforcers, write a concrete, conservative POSIX shell command. \
 For a supervise decision, ALWAYS include an `@ <glob>` watch scope (in the \
 target field, e.g. "@ src/auth/**") naming the directory it governs — a \
@@ -586,19 +594,28 @@ DOCUMENT:
 {doc}
 """
 
-def annotate_manifest(rt: Path, limit: int = 400, max_chars: int = 9000) -> str:
-    """A capped listing of real repo paths so the annotator points enforcers at
-    files that exist instead of guessing. Tests first (the most-fabricated
-    target), then dependency manifests, then the rest."""
+def annotate_manifest(rt: Path, limit: int = 400, max_chars: int = 9000,
+                      test_sample: int = 40) -> str:
+    """A capped listing of real repo paths so the annotator targets files that
+    exist. Dependency manifests FIRST (always — they're few and the highest
+    signal), then source by shallowest path, then only a SAMPLE of test files.
+    Listing every test file first saturates the budget on large/test-heavy
+    repos (cli/cli, deno) and starves the model of source + manifests."""
     files = [rel for rel, _ in repo_files(rt) if rel != CHARTER_FILE]
     MANIFESTS = ("package.json", "pyproject.toml", "cargo.toml", "go.mod",
-                 "requirements.txt", "setup.py", "setup.cfg", "build.gradle")
-    def rank(f: str):
-        low = f.lower()
-        return (0 if "test" in low else 1 if low.rsplit("/", 1)[-1] in MANIFESTS
-                else 2, f)
+                 "requirements.txt", "setup.py", "setup.cfg", "go.sum")
+    def is_manifest(f: str) -> bool:
+        base = f.rsplit("/", 1)[-1].lower()
+        return (base in MANIFESTS or base.endswith((".gradle", ".gradle.kts"))
+                or base.endswith(".versions.toml"))
+    manifests = sorted(f for f in files if is_manifest(f))
+    rest = [f for f in files if not is_manifest(f)]
+    tests = [f for f in rest if "test" in f.lower()]
+    source = [f for f in rest if "test" not in f.lower()]
+    source.sort(key=lambda f: (f.count("/"), f))   # shallow/central first
+    ordered = manifests + source + sorted(tests)[:test_sample]
     out, n = [], 0
-    for f in sorted(files, key=rank)[:limit]:
+    for f in ordered[:limit]:
         if n + len(f) + 1 > max_chars:
             break
         out.append(f)

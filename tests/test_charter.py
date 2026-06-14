@@ -401,6 +401,23 @@ def test_audit_reason_cannot_forge_verdict_lines(repo):
     assert not forged
 
 
+def test_annotate_manifest_not_saturated_by_tests(repo):
+    """On a test-heavy repo the manifest must still surface dependency
+    manifests and source — a flood of test files must not crowd them out
+    (the cli/cli + deno saturation regression)."""
+    (repo / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    (repo / "main.py").write_text("x = 1\n", encoding="utf-8")
+    td = repo / "tests" / "specs"
+    td.mkdir(parents=True, exist_ok=True)
+    for i in range(500):
+        (td / f"test_long_fixture_name_{i:04d}.py").write_text("x\n",
+                                                              encoding="utf-8")
+    m = g.annotate_manifest(repo)
+    assert "pyproject.toml" in m            # the dependency manifest survives
+    assert "main.py" in m                   # real source survives
+    assert m.count("tests/specs/test_") < 500   # tests are sampled, not a flood
+
+
 def test_check_warns_on_coverage_blind_test_enforcer(repo):
     """A `test:`/`type:` target with no #symbol only proves the FILE exists, not
     that it covers the decision (the httpx D-005 trap). check stays green but

@@ -282,6 +282,14 @@ hand — `check` never calls a model.
 
 ## Known limits
 
+- **Sweet spot: a repo with a real design/architecture doc.** Baseline-tested
+  across Flask, httpx, click, prettier, rust-analyzer, the GitHub CLI, okhttp,
+  and Deno. It does best when the doc states binding "never/always/default"
+  decisions; it degrades on (a) repos with no design doc — pointed at a how-to
+  guide it tends to extract file-existence trivia, (b) very large monorepos,
+  and (c) deep language-specific symbol/dependency layouts (Go package symbols,
+  Kotlin multi-root/Gradle version catalogs). Open issues track these. The
+  deterministic `assert` rung is the most language-agnostic; lean on it.
 - **`check` executes shell from CHARTER.md.** The trust gate means a cloned
   repo can't run code on your machine before you review it, but after you
   approve, the asserts are exactly as trustworthy as your review of them.

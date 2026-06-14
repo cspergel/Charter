@@ -31,6 +31,16 @@ graded by an independent reviewer) drove two fixes:
   decision — green by omission. `check` now warns on these and `annotate`
   prefers a self-contained `assert:` or a symbol-bound target instead. On httpx
   this dropped bare `test:` targets from 10 to 0 (now mostly asserts).
+- **Manifest no longer saturates on large/test-heavy repos.** A second baseline
+  in new ecosystems (Go cli/cli, Kotlin/Gradle okhttp, Deno monorepo) found the
+  file manifest was ranking *test files first* and capping at 9 KB, so on big
+  repos (deno: 13k files) it surfaced only test fixtures and starved the model
+  of source and dependency manifests — defeating the "target real files" fix.
+  The manifest now lists dependency manifests first, then source by shallowest
+  path, then only a sample of tests. annotate is also nudged not to manufacture
+  decisions from procedural/how-to docs (file-existence trivia). Remaining
+  ecosystem gaps (Go/JVM symbol resolution, Gradle version catalogs,
+  comment-matching greps, over-broad watch globs) are tracked in issues #5–#8.
 
 ## v0.4.2 — trust bound to repo instance (adversarial review)
 
