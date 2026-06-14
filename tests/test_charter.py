@@ -123,6 +123,59 @@ def settle(repo):
     assert run(["approve", "--why", "t"], repo).returncode == 0
 
 
+def _approve_assert_repo(repo):
+    """A repo with one deterministic decision that currently holds (no
+    'supabase' under src/), approved locally so verify may run it."""
+    (repo / "CHARTER.md").write_text(
+        '[D-001] No hosted backend -> assert: ! grep -rqE "supabase" src '
+        '!! echo supabase | grep -qE "supabase"\n', encoding="utf-8")
+    (repo / "src" / "app.py").write_text("import sqlite3\n", encoding="utf-8")
+    assert run(["approve", "--why", "t"], repo).returncode == 0
+
+
+def test_verify_proves_live_enforcer(repo):
+    _approve_assert_repo(repo)
+    r = run(["verify"], repo)
+    assert r.returncode == 0
+    assert "proven" in r.stdout
+
+
+def test_verify_adversarial_defended_and_restores(repo):
+    """Saboteur writes the violation where the grep DOES look -> caught;
+    and the mutation is always reverted."""
+    _approve_assert_repo(repo)
+    backend = echo_backend(repo, {"file": "src/sneaky.py", "mode": "create",
+                                  "content": "import supabase\n",
+                                  "note": "inside src"})
+    r = run(["verify", "--adversarial"], repo, env={"CHARTER_LLM_CMD": backend})
+    assert r.returncode == 0
+    assert "defended" in r.stdout
+    assert not (repo / "src" / "sneaky.py").exists()   # restored
+
+
+def test_verify_adversarial_finds_bypass_and_restores(repo):
+    """Saboteur writes the violation where the grep does NOT look (outside
+    src/) -> the enforcer misses it -> reported as a bypass; mutation reverted."""
+    _approve_assert_repo(repo)
+    backend = echo_backend(repo, {"file": "notes.txt", "mode": "create",
+                                  "content": "we use supabase here\n",
+                                  "note": "outside the src/ scope the grep checks"})
+    r = run(["verify", "--adversarial"], repo, env={"CHARTER_LLM_CMD": backend})
+    assert r.returncode == 1
+    assert "BYPASS" in r.stdout
+    assert not (repo / "notes.txt").exists()           # restored even on bypass
+
+
+def test_verify_requires_local_approval(repo):
+    (repo / "CHARTER.md").write_text(
+        '[D-001] x -> assert: ! grep -rqE "supabase" src !! echo supabase | grep -q supabase\n',
+        encoding="utf-8")
+    d = repo / ".charter"; d.mkdir()
+    (d / "charter.sha").write_text(g.intent_hash(repo) + "\n", encoding="utf-8")
+    r = run(["verify"], repo)   # approved-but-not-locally-trusted clone
+    assert r.returncode == 1 and "approve" in (r.stdout + r.stderr)
+
+
 def test_unapproved_index_fails(repo):
     (repo / "CHARTER.md").write_text(INTENT)
     r = run(["check"], repo)

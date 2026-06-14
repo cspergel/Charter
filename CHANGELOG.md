@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.5.0 — proof-carrying governance + the saboteur
+
+`charter verify` proves each deterministic decision is *actually* enforceable
+right now, instead of trusting that it is.
+
+- **`charter verify`** (deterministic): for every assert, confirms the rule
+  holds and its tripwire fires — a "N/N proven enforceable" report. A fitness
+  function with a typo'd path passes forever; this surfaces the vacuous ones.
+- **`charter verify --adversarial`** (the saboteur): an LLM red-team agent
+  tries to slip a *real* violation past each enforcer — putting it in a path
+  the grep doesn't scan, a synonym the pattern misses, a different file type —
+  applied to a **sandboxed copy that is always restored**, then reports any
+  **bypass** with the exact evasion. Governance that attacks itself.
+  Dogfood result: run on phi-safe, the saboteur bypassed 3 of 5 enforcers
+  (e.g. "no network calls" only grepped `requests|httpx|urllib`, so
+  `http.client` evaded it) — exactly the "is this rule real or theater?"
+  question no other tool answers. Originals restored; the repo is untouched.
+
+`verify` runs asserts (and `--adversarial` writes-then-restores files), so it
+requires the same local approval as `check`.
+
 ## v0.4.3 — annotation-quality fixes from a third-party baseline
 
 A baseline test on a real repo we didn't write (Flask's `docs/design.rst`,

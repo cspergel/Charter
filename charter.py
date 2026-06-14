@@ -56,7 +56,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-__version__ = "0.4.3"
+__version__ = "0.5.0"
 CHARTER_FILE = "CHARTER.md"
 STATE_DIR = ".charter"
 LEDGER = "ledger.jsonl"
@@ -901,6 +901,153 @@ def warn_intent_problems(problems):
     for p in problems:
         print(f"  WARN {CHARTER_FILE} {p}", file=sys.stderr)
 
+# ------------------------------------------------------------------ verify
+
+SABOTEUR_PROMPT = """You are a red-team agent auditing a governance rule. Your \
+job is to VIOLATE the design decision below while EVADING its enforcer — to \
+prove whether the enforcer actually holds against real code, or is theater.
+
+DECISION: {title}
+ENFORCER (assert command): {target}
+
+REPO FILES (real paths you may target):
+{files}
+
+Craft ONE concrete file change that breaks the decision's intent but that the \
+enforcer above might NOT catch — e.g. put the violation in a path the grep \
+does not scan, use a synonym/spelling/casing the pattern misses, or a \
+different file/extension. Respond with ONLY a JSON object, no fences:
+{{"file":"<relative path to write>","mode":"create"|"append",\
+"content":"<minimal text that violates the decision>",\
+"note":"<one line: how this evades the enforcer>"}}"""
+
+def _within_repo(rt: Path, rel: str) -> bool:
+    try:
+        return (rt / rel).resolve().is_relative_to(rt.resolve())
+    except (OSError, ValueError):
+        return False
+
+def saboteur_attack(rt: Path, d: dict):
+    """Ask an LLM to craft a violation that evades this decision's enforcer."""
+    prompt = SABOTEUR_PROMPT.format(title=d["title"], target=d["target"],
+                                    files=annotate_manifest(rt))
+    m = extract_json(llm_call(prompt, AUDIT_MODEL, max_tokens=600))
+    if not isinstance(m, dict) or "file" not in m or "content" not in m:
+        return None
+    return m
+
+def run_attack(rt: Path, d: dict, m: dict):
+    """Apply the saboteur's mutation, run THIS decision's assert, then ALWAYS
+    restore the repo. Returns ('defended'|'bypassed'|'skipped', detail)."""
+    rel = str(m.get("file", "")).strip().lstrip("/").replace("\\", "/")
+    if not rel or not _within_repo(rt, rel) or ".charter" in rel:
+        return "skipped", "saboteur named an out-of-repo or state path"
+    target = rt / rel
+    if target.is_dir():
+        return "skipped", f"{rel} is a directory"
+    existed = target.exists()
+    original = target.read_bytes() if existed else None
+    made_parent = not target.parent.exists()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        body = str(m.get("content", "")).encode("utf-8")
+        if m.get("mode") == "append" and original is not None:
+            target.write_bytes(original + b"\n" + body)
+        else:
+            target.write_bytes(body)
+        _WALK_CACHE.clear()
+        try:
+            caught = run_shell(rt, d["target"]).returncode != 0
+        except subprocess.TimeoutExpired:
+            return "skipped", "assert timed out"
+        return ("defended" if caught else "bypassed"), str(m.get("note", ""))
+    finally:
+        if original is not None:
+            target.write_bytes(original)
+        elif target.exists():
+            target.unlink()
+        if made_parent:
+            try:
+                target.parent.rmdir()
+            except OSError:
+                pass
+        _WALK_CACHE.clear()
+
+def cmd_verify(args):
+    """Proof-carrying governance: prove each deterministic decision is actually
+    enforceable RIGHT NOW. Default: tripwire proof. --adversarial: an LLM
+    saboteur tries to slip a real violation past each enforcer (sandboxed,
+    always restored) and reports any bypass — governance that attacks itself."""
+    rt = root()
+    decisions, problems = parse_intent(rt)
+    if problems:
+        for p in problems:
+            print(f"  FAIL {p}")
+        die("fix index problems before verify")
+    s = sentinel_ok(rt)
+    trusted = s is True and (local_trust_ok(rt) or getattr(args, "trust", False))
+    if not trusted:
+        die(f"verify runs asserts from {CHARTER_FILE} (and --adversarial writes "
+            f"then restores files) — review it and `charter approve` locally "
+            f"first, or set CHARTER_TRUST_ASSERTS=1 in CI you control")
+    asserts = [(did, d) for did, d in decisions.items() if d["kind"] == "assert"]
+    if not asserts:
+        print("charter verify: no deterministic (assert) decisions to prove")
+        return
+
+    if args.adversarial:
+        if not (os.environ.get("CHARTER_LLM_CMD")
+                or os.environ.get("ANTHROPIC_API_KEY")):
+            die("adversarial verify needs an LLM backend "
+                "(CHARTER_LLM_CMD or ANTHROPIC_API_KEY)")
+        bypassed = 0
+        for did, d in asserts:
+            if run_shell(rt, d["target"]).returncode != 0:
+                print(f"  skip {did} — assert already failing; fix it first")
+                continue
+            m = saboteur_attack(rt, d)
+            if not m:
+                print(f"  ?    {did} — saboteur produced no usable attack")
+                continue
+            verdict, note = run_attack(rt, d, m)
+            if verdict == "bypassed":
+                bypassed += 1
+                print(f"  BYPASS {did} \"{d['title']}\"")
+                print(f"         the enforcer did NOT catch a real violation — "
+                      f"wrote {m.get('file')}: {note}")
+            elif verdict == "defended":
+                print(f"  ok   {did} defended — caught the injected violation")
+            else:
+                print(f"  skip {did} — {note}")
+        if bypassed:
+            print(f"charter verify: {bypassed} of {len(asserts)} enforcer(s) "
+                  f"BYPASSED — governance is theater for these; tighten them")
+            sys.exit(1)
+        print(f"charter verify: all {len(asserts)} enforcer(s) survived the "
+              f"adversarial attack — provably enforced against this code")
+        return
+
+    proven = broken = live = unproven = 0
+    for did, d in asserts:
+        tw = d.get("tripwire", "")
+        p = verify_enforcer(rt, d)
+        if not tw:
+            print(f"  ?    {did} unproven — no tripwire proof"); unproven += 1
+        elif trivial_tripwire(tw):
+            print(f"  WARN {did} vacuous — trivial tripwire proves nothing"); broken += 1
+        elif p is None:
+            print(f"  ok   {did} proven — assert holds and its tripwire fires"); proven += 1
+        elif "tripwire" in p:
+            print(f"  FAIL {did} broken — tripwire does not fire; vacuous"); broken += 1
+        else:
+            print(f"  live {did} — enforcer active, currently catching a violation"); live += 1
+    n = len(asserts)
+    print(f"charter verify: {proven}/{n} proven, {live} live, "
+          f"{broken} vacuous/broken, {unproven} unproven"
+          + ("  (run --adversarial for a real attack)" if not unproven else ""))
+    if broken:
+        sys.exit(1)
+
 def cmd_audit(args):
     rt = root()
     decisions, problems = parse_intent(rt)
@@ -1365,6 +1512,15 @@ def main():
     c.add_argument("--json", action="store_true",
                    help="machine-readable output")
     c.set_defaults(fn=cmd_check)
+
+    v = sub.add_parser("verify", help="prove each enforcer is actually live "
+                                      "(--adversarial: LLM saboteur attacks them)")
+    v.add_argument("--adversarial", action="store_true",
+                   help="LLM red-team tries to slip a real violation past each "
+                        "enforcer (sandboxed, always restored); reports bypasses")
+    v.add_argument("--trust", action="store_true",
+                   help="run without local approval (CI you control)")
+    v.set_defaults(fn=cmd_verify)
 
     sub.add_parser("audit", help="judged pass over supervise-tier decisions "
                                  "(cited files as scope)").set_defaults(fn=cmd_audit)

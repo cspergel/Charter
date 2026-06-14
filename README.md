@@ -104,6 +104,8 @@ charter annotate SPEC.md     # LLM reads your prose doc, extracts binding
                              #   enforcers, strengthen supervise items
 charter approve --why "..."  # the human gate: journaled, hash-stamped
 charter check                # deterministic, free — pre-commit + CI
+charter verify               # prove each enforcer is actually live, not theater
+charter verify --adversarial # an LLM saboteur tries to bypass each enforcer
 charter audit                # judged pass over supervise-tier (PR-time)
 charter digest [--mark]      # batch-review everything the system did
 charter trace D-001          # everything that traces to a decision
@@ -218,6 +220,21 @@ For non-hook agents (Cursor, aider), put this in `AGENTS.md`/`.cursorrules`:
 - **The graph navigates; enforcers govern.** `graph --json` exists for
   agents to ask "what connects to what," but no verdict ever comes from
   graph topology — authority lives in things that can't be argued with.
+
+## Proof-carrying governance (`verify`)
+
+A check that's never been exercised is a check you can't trust — a typo'd grep
+path passes forever and you never notice. `charter verify` proves each
+deterministic decision is actually enforceable against your code *right now*.
+
+`charter verify --adversarial` goes further: an LLM red-team agent tries to
+slip a real violation past each enforcer — hiding it in a path the grep
+doesn't scan, a synonym the pattern misses, a different file type — on a
+sandboxed copy that's always restored. Anything it gets through is reported as
+a **bypass**, with the exact evasion. Run on this project's own sibling tool it
+bypassed 3 of 5 enforcers (e.g. a "no network calls" rule that only grepped
+`requests|httpx|urllib` — `http.client` walked right past). It's governance
+that attacks itself, so "is this rule real or just theater?" has an answer.
 
 ## Where it fits
 
