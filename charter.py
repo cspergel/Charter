@@ -72,7 +72,10 @@ TEXT_EXT = {".py", ".js", ".ts", ".tsx", ".jsx", ".mjs", ".cjs", ".vue",
             ".svelte", ".go", ".rs", ".java", ".kt", ".kts", ".rb", ".php",
             ".swift", ".scala", ".dart", ".lua", ".ex", ".exs", ".m", ".mm",
             ".c", ".h", ".cpp", ".cs", ".sql", ".sh", ".ps1", ".yaml", ".yml",
-            ".toml", ".md", ".txt", ".json", ".html", ".css", ""}
+            ".toml", ".md", ".txt", ".json", ".html", ".css",
+            # project/build files so [D-xxx] citations in them are visible
+            ".csproj", ".fsproj", ".props", ".targets", ".gemspec", ".gradle",
+            ".podspec", ""}
 # liveness/citation-scope counts only code, not prose (changelogs don't keep
 # decisions alive and don't define audit jurisdiction)
 CODE_EXT = TEXT_EXT - {".md", ".txt"}
@@ -80,6 +83,7 @@ SENTINEL = "charter.sha"
 MAX_SCAN_BYTES = 1_000_000
 MAX_LLM_BYTES = 2_000_000   # cap backend stdout / API body read
 AUDIT_FILE_CAP = 60         # max files judged per decision (bounds LLM calls)
+WATCH_GLOB_MAX = 200        # a watch scope wider than this is noise, not jurisdiction
 MAX_JSON_CANDIDATES = 4000  # bound extract_json work on adversarial backend output
 MAX_JSON_DEPTH = 1000       # abandon a candidate whose nesting is absurd
 
@@ -542,11 +546,25 @@ path — prefer a self-contained `assert:` grep instead. Only propose a \
 non-existent path when you deliberately intend a build obligation for a \
 greenfield repo, which is rare here.
 
-Prefer asserts that grep DEPENDENCY MANIFESTS (package.json, pyproject.toml, \
-Cargo.toml, go.mod, requirements.txt) or a specific code construct, over \
-greps of source files that can match a comment or docstring. For "must not \
-depend on X", grep the dependency manifest — `! grep -iq "x" package.json` — \
-not source, where a passing mention of X in a comment would false-trip.
+Prefer asserts that grep the project's DEPENDENCY MANIFEST over greps of \
+source (which match comments/strings). The manifest depends on the ecosystem — \
+use the one that exists in REPO FILES: package.json (npm), pyproject.toml / \
+requirements.txt (py), Cargo.toml (rust), go.mod (go), *.gemspec / Gemfile \
+(ruby), Directory.Packages.props / *.csproj (.NET), pom.xml / build.gradle \
+(jvm), CMakeLists.txt / Makefile.am / configure.ac (C/C++), composer.json \
+(php), pubspec.yaml (dart), mix.exs (elixir).
+
+ANCHOR the grep to the dependency DECLARATION syntax, never a bare name — a \
+bare name matches a URL, a comment, or the project's own name and passes \
+vacuously even after the dependency is removed. Examples:
+- ruby: `! grep -qE "add_dependency ['\\"]tilt['\\"]" *.gemspec` (not `grep tilt`)
+- npm: `! grep -qE '"x"\\s*:' package.json`
+- .NET: `! grep -qE 'Package(Reference|Version) Include="X"' Directory.Packages.props`
+- python: `! grep -qiE '^x([=<>!~ ]|$)' requirements.txt`
+For .NET central package management the version is in Directory.Packages.props \
+and the reference is in a *.csproj — to forbid a package, check the *.csproj \
+PackageReference. The tripwire must feed a real declaration line, e.g. \
+`echo "add_dependency 'tilt'" | grep -qE "add_dependency ['\\"]tilt['\\"]"`.
 
 A bare `test:`/`type:` FILE path only proves the file exists — it does NOT \
 prove the file covers the decision. So either bind the target to a real \
@@ -594,6 +612,29 @@ DOCUMENT:
 {doc}
 """
 
+# dependency/build manifests across ecosystems — the highest-signal files for
+# "must (not) depend on X" enforcers. Exact basenames + suffix families.
+_MANIFEST_NAMES = frozenset({
+    "package.json", "pyproject.toml", "cargo.toml", "go.mod", "go.sum",
+    "requirements.txt", "setup.py", "setup.cfg", "pipfile",            # py
+    "gemfile", "gemfile.lock",                                          # ruby
+    "directory.packages.props", "directory.build.props",
+    "packages.config", "nuget.config",                                 # .net
+    "cmakelists.txt", "makefile", "makefile.am", "makefile.in",
+    "configure.ac", "conanfile.txt", "vcpkg.json",                     # c/c++
+    "pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle",  # jvm
+    "composer.json",                                                   # php
+    "package.swift",                                                   # swift
+    "pubspec.yaml",                                                    # dart
+    "mix.exs",                                                         # elixir
+})
+_MANIFEST_SUFFIXES = (".gemspec", ".csproj", ".fsproj", ".vbproj", ".podspec",
+                      ".versions.toml", ".gradle", ".gradle.kts", ".mk")
+
+def is_dependency_manifest(f: str) -> bool:
+    base = f.rsplit("/", 1)[-1].lower()
+    return base in _MANIFEST_NAMES or base.endswith(_MANIFEST_SUFFIXES)
+
 def annotate_manifest(rt: Path, limit: int = 400, max_chars: int = 9000,
                       test_sample: int = 40) -> str:
     """A capped listing of real repo paths so the annotator targets files that
@@ -602,12 +643,7 @@ def annotate_manifest(rt: Path, limit: int = 400, max_chars: int = 9000,
     Listing every test file first saturates the budget on large/test-heavy
     repos (cli/cli, deno) and starves the model of source + manifests."""
     files = [rel for rel, _ in repo_files(rt) if rel != CHARTER_FILE]
-    MANIFESTS = ("package.json", "pyproject.toml", "cargo.toml", "go.mod",
-                 "requirements.txt", "setup.py", "setup.cfg", "go.sum")
-    def is_manifest(f: str) -> bool:
-        base = f.rsplit("/", 1)[-1].lower()
-        return (base in MANIFESTS or base.endswith((".gradle", ".gradle.kts"))
-                or base.endswith(".versions.toml"))
+    is_manifest = is_dependency_manifest
     manifests = sorted(f for f in files if is_manifest(f))
     rest = [f for f in files if not is_manifest(f)]
     tests = [f for f in rest if "test" in f.lower()]
@@ -796,10 +832,16 @@ def cmd_check(args):
             (warnings if args.allow_blind_supervise else problems).append(msg)
         if d["watch"]:
             cited = set(rel for rel, _ in code_cites[did])
+            watched = watched_files(rt, d["watch"])
+            if len(watched) > WATCH_GLOB_MAX:
+                warnings.append(f"{did} watch scope @ {', '.join(d['watch'])} "
+                                f"matches {len(watched)} files — too broad to "
+                                f"govern meaningfully; narrow it to the "
+                                f"directory the decision actually concerns")
             # oversized files are skipped by the citation scan, so their
             # citations are invisible — don't flag them as "uncited" (false
             # positive that no amount of citing can fix; doctor reports them)
-            uncited = [rel for rel in watched_files(rt, d["watch"])
+            uncited = [rel for rel in watched
                        if Path(rel).suffix.lower() in CODE_EXT
                        and rel not in cited and rel not in oversized]
             for rel in uncited[:UNCITED_CAP]:

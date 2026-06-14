@@ -401,6 +401,29 @@ def test_audit_reason_cannot_forge_verdict_lines(repo):
     assert not forged
 
 
+def test_check_warns_on_overbroad_watch_glob(repo):
+    """A supervise watch glob covering a huge file set (deno's 8,625) is noise,
+    not jurisdiction — check warns it's too broad to govern."""
+    big = repo / "huge"
+    big.mkdir()
+    for i in range(g.WATCH_GLOB_MAX + 5):
+        (big / f"f{i:04d}.py").write_text("x\n", encoding="utf-8")
+    (repo / "CHARTER.md").write_text(
+        "[D-001] broad -> supervise @ huge/**\n", encoding="utf-8")
+    run(["approve", "--why", "t"], repo)
+    r = run(["check"], repo)
+    assert "too broad" in r.stdout
+
+
+def test_manifest_detects_cross_ecosystem_files(repo):
+    """The manifest detector must recognize C/.NET/Ruby/etc. dependency files,
+    not just Python/JS/Go (the curl/Polly/sinatra miss)."""
+    for name in ("CMakeLists.txt", "sinatra.gemspec", "Directory.Packages.props",
+                 "composer.json", "App.csproj", "pubspec.yaml"):
+        assert g.is_dependency_manifest(name), name
+    assert not g.is_dependency_manifest("src/main.py")
+
+
 def test_annotate_manifest_not_saturated_by_tests(repo):
     """On a test-heavy repo the manifest must still surface dependency
     manifests and source — a flood of test files must not crowd them out

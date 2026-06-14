@@ -41,6 +41,19 @@ graded by an independent reviewer) drove two fixes:
   decisions from procedural/how-to docs (file-existence trivia). Remaining
   ecosystem gaps (Go/JVM symbol resolution, Gradle version catalogs,
   comment-matching greps, over-broad watch globs) are tracked in issues #5–#8.
+- **Cross-ecosystem dependency manifests + anchored dep asserts.** A third
+  baseline (C/curl, .NET/Polly, Ruby/sinatra) found the manifest allowlist and
+  the "grep the manifest" doctrine were Python/JS/Go/Rust-only: curl elevated
+  stray Python `requirements.txt`, Polly's NuGet files weren't recognized, and
+  sinatra's dep asserts greped bare names — deleting `add_dependency 'tilt'`
+  but leaving a comment kept the check green. Now: the manifest detector spans
+  C/C++ (CMake/Make/configure), .NET (Directory.Packages.props, *.csproj),
+  Ruby (*.gemspec, Gemfile), JVM (pom.xml, *.gradle), PHP/Swift/Dart/Elixir;
+  the annotate prompt anchors dep asserts to the *declaration* syntax per
+  ecosystem (e.g. `add_dependency ['"]tilt['"]`); project files (.csproj/
+  .props/.targets/.gemspec) are citation-visible; and `check` warns when a
+  watch glob is too broad to govern (#8). Verified: the sinatra false-pass is
+  closed (removing a dep now fails even with a lingering comment).
 
 ## v0.4.2 — trust bound to repo instance (adversarial review)
 
