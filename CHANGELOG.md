@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.4.3 — annotate proposes tripwire proofs
+
+A baseline test on a third-party repo (Flask's `docs/design.rst`, graded by an
+independent reviewer) found that `annotate` produced assert enforcers with no
+`!! tripwire` proof — so a "never add a database layer" guard could silently
+rot if someone edited the regex, passing green while detecting nothing. The
+annotate prompt now requires a tripwire for every assert: a probe that pipes a
+known violation sample into the same detector and must exit 0. Verified on
+Flask — every generated assert now ships a proof, and `doctor` reports "all
+asserts carry tripwire proofs."
+
 ## v0.4.2 — trust bound to repo instance (adversarial review)
 
 An adversarial review of the 0.4.1 trust redesign found a narrower residual

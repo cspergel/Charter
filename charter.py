@@ -56,7 +56,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-__version__ = "0.4.2"
+__version__ = "0.4.3"
 CHARTER_FILE = "CHARTER.md"
 STATE_DIR = ".charter"
 LEDGER = "ledger.jsonl"
@@ -531,11 +531,22 @@ it becomes a build obligation). Include a short verbatim "anchor" quote \
 (under 12 words) copied exactly from the document near where the decision \
 is stated, so the symbol can be inlined into the doc.
 
+For EVERY assert enforcer, also provide a "tripwire": a one-line POSIX shell \
+probe that MUST exit 0, proving the detector can actually catch a known \
+violation — otherwise a typo'd or vacuous grep passes forever and the guard \
+silently rots. The canonical form pipes a sample violation into the SAME \
+detector. Examples: for `! grep -rqE "jwt" src` the tripwire is \
+`echo jwt | grep -qE "jwt"`; for `! grep -iqE "sqlalchemy|psycopg" pyproject.toml` \
+it is `echo sqlalchemy | grep -iqE "sqlalchemy|psycopg"`. A bare `true`/`echo` \
+with no detector is NOT acceptable. Only assert enforcers need a tripwire; \
+leave it empty for other kinds.
+
 {existing}
 
 Respond with ONLY a JSON array, no markdown fences:
 [{{"title":"<one line>","kind":"assert|test|type|lint|structure|supervise",\
 "target":"<command or path#Symbol or empty for supervise>",\
+"tripwire":"<proof probe for assert kinds, else empty>",\
 "anchor":"<short verbatim quote>"}}]
 
 DOCUMENT:
@@ -590,7 +601,16 @@ def cmd_annotate(args):
             new_lines.append(f"[{did}] {title} -> supervise{tail}")
         else:
             sep = ": " if target else ""
-            new_lines.append(f"[{did}] {title} -> {kind}{sep}{target}".rstrip())
+            line = f"[{did}] {title} -> {kind}{sep}{target}".rstrip()
+            if kind == "assert":
+                # a proof probe that must exit 0 — keeps a vacuous/typo'd
+                # assert from passing forever (scrub separators so the
+                # tripwire can't break line parsing or smuggle a watch glob)
+                tw = str(it.get("tripwire", "")).strip().replace("\n", " ")
+                tw = tw.replace("->", "-").replace("!!", "").replace(" @ ", " ").strip()
+                if tw:
+                    line += f" !! {tw}"
+            new_lines.append(line)
         anchor = str(it.get("anchor", "")).strip()
         if anchor:
             annotations.append((anchor, did))
