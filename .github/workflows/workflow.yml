@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # run the bundled JS actions on Node 24 (Node 20 is being deprecated)
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     runs-on: ubuntu-latest

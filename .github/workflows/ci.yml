@@ -2,6 +2,9 @@ name: ci
 on: [push, pull_request]
 permissions:
   contents: read
+env:
+  # run the bundled JS actions on Node 24 (Node 20 is being deprecated)
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 jobs:
   test:
     runs-on: ${{ matrix.os }}
