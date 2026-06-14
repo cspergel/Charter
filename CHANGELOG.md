@@ -16,8 +16,16 @@ graded by an independent reviewer) drove two fixes:
   scanner matched the literal dotted string, so a reasonable suggestion like
   `#Flask.wsgi_app` false-failed as enforcer rot (source defines `def
   wsgi_app`, never `Flask.wsgi_app`). A dotted target now resolves to its final
-  member; whole-token matching for plain symbols is unchanged. This turned the
-  Flask charter from red (2 false failures) to green.
+  member; whole-token matching for plain symbols is unchanged.
+- **annotate now sees the repo's real files and targets them.** A 5-repo
+  baseline (httpx, rust-analyzer, click, prettier, Flask) showed the dominant
+  failure was annotate *guessing* test/file targets that don't exist — e.g. it
+  invented `tests/test_envvars.py` — so a freshly-annotated repo checked mostly
+  red for no real reason. The prompt now receives a capped manifest of actual
+  repo paths and must target those (or prefer a self-contained `assert:`),
+  greps dependency manifests rather than comment-matchable source for
+  "must-not-depend" rules, and attaches `@ watch` globs to supervise decisions.
+  On click this moved the result from 2/10 enforcers live to 6/6.
 
 ## v0.4.2 — trust bound to repo instance (adversarial review)
 

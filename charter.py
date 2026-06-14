@@ -532,11 +532,28 @@ config), assert (a shell command that exits 0 on compliance — prefer this \
 when a grep can catch violations), supervise (judgment-only; use sparingly, \
 only when nothing mechanical can check it).
 
+CRITICAL — target real things, do not guess. A test/type/lint/structure \
+target that does not exist becomes a FALSE failure, not governance. The repo's \
+actual files are listed under REPO FILES below. For a test/type/lint/structure \
+enforcer, the path MUST be one of those files (a `#Symbol` must be a real \
+definition in the named file). If the document states a contract but no \
+suitable file exists to point at, DO NOT invent a plausible-sounding test \
+path — prefer a self-contained `assert:` grep instead. Only propose a \
+non-existent path when you deliberately intend a build obligation for a \
+greenfield repo, which is rare here.
+
+Prefer asserts that grep DEPENDENCY MANIFESTS (package.json, pyproject.toml, \
+Cargo.toml, go.mod, requirements.txt) or a specific code construct, over \
+greps of source files that can match a comment or docstring. For "must not \
+depend on X", grep the dependency manifest — `! grep -iq "x" package.json` — \
+not source, where a passing mention of X in a comment would false-trip.
+
 For assert enforcers, write a concrete, conservative POSIX shell command. \
-For file-based enforcers, propose a plausible path (it may not exist yet — \
-it becomes a build obligation). Include a short verbatim "anchor" quote \
-(under 12 words) copied exactly from the document near where the decision \
-is stated, so the symbol can be inlined into the doc.
+For a supervise decision, ALWAYS include an `@ <glob>` watch scope (in the \
+target field, e.g. "@ src/auth/**") naming the directory it governs — a \
+supervise decision with no jurisdiction fails check. Include a short verbatim \
+"anchor" quote (under 12 words) copied exactly from the document near where \
+the decision is stated, so the symbol can be inlined into the doc.
 
 For EVERY assert enforcer, also provide a "tripwire": a one-line POSIX shell \
 probe that MUST exit 0, proving the detector can actually catch a known \
@@ -550,6 +567,9 @@ leave it empty for other kinds.
 
 {existing}
 
+REPO FILES (the only valid paths for test/type/lint/structure targets):
+{files}
+
 Respond with ONLY a JSON array, no markdown fences:
 [{{"title":"<one line>","kind":"assert|test|type|lint|structure|supervise",\
 "target":"<command or path#Symbol or empty for supervise>",\
@@ -559,6 +579,25 @@ Respond with ONLY a JSON array, no markdown fences:
 DOCUMENT:
 {doc}
 """
+
+def annotate_manifest(rt: Path, limit: int = 400, max_chars: int = 9000) -> str:
+    """A capped listing of real repo paths so the annotator points enforcers at
+    files that exist instead of guessing. Tests first (the most-fabricated
+    target), then dependency manifests, then the rest."""
+    files = [rel for rel, _ in repo_files(rt) if rel != CHARTER_FILE]
+    MANIFESTS = ("package.json", "pyproject.toml", "cargo.toml", "go.mod",
+                 "requirements.txt", "setup.py", "setup.cfg", "build.gradle")
+    def rank(f: str):
+        low = f.lower()
+        return (0 if "test" in low else 1 if low.rsplit("/", 1)[-1] in MANIFESTS
+                else 2, f)
+    out, n = [], 0
+    for f in sorted(files, key=rank)[:limit]:
+        if n + len(f) + 1 > max_chars:
+            break
+        out.append(f)
+        n += len(f) + 1
+    return "\n".join(out) if out else "(repo is empty — targets are build obligations)"
 
 def cmd_annotate(args):
     rt = root()
@@ -573,6 +612,7 @@ def cmd_annotate(args):
         existing = ("Decisions already indexed (do NOT re-extract these):\n"
                     + "\n".join(f"- {d['title']}" for d in decisions.values()))
     prompt = ANNOTATE_PROMPT.format(cap=args.cap, existing=existing,
+                                    files=annotate_manifest(rt),
                                     doc=doc_text[:60000])
     raw = llm_call(prompt, ANNOTATE_MODEL, max_tokens=2500)
     items = extract_json(raw)
