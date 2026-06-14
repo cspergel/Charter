@@ -19,7 +19,7 @@ dependency is pytest.
 git clone https://github.com/cspergel/Charter
 cd Charter
 python -m pip install "pytest==8.*"
-python -m pytest tests/ -q          # 63 passed, 2 skipped on Windows; 65/0 on Linux CI
+python -m pytest tests/ -q          # 64 passed, 2 skipped on Windows; 66/0 on Linux CI
 sh demo/run_demo.sh                 # offline end-to-end (Git Bash on Windows)
 ```
 

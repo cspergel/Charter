@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.4.2 — trust bound to repo instance (adversarial review)
+
+An adversarial review of the 0.4.1 trust redesign found a narrower residual
+hole: the out-of-repo trust record was keyed only by repo path + CHARTER.md
+hash, so a *different* repo later placed at the same path with a byte-identical
+CHARTER.md inherited the approval — and could ship altered helper scripts its
+asserts invoke. Trust is now also pinned to a per-repo **instance nonce**
+stored in `.git` (uncommitted, regenerated on every clone). A replacement repo
+gets a fresh `.git` with no nonce, so its asserts are refused until you approve
+it yourself. Non-git repos and worktrees keep the path+hash fallback.
+
 ## v0.4.1 — security + correctness (pre-release audit)
 
 A 5-lens audit before the public launch found two release blockers, both fixed

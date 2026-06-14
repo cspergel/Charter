@@ -15,12 +15,16 @@ in a repo whose CHARTER.md you have personally reviewed.
   hash). It exists to catch *accidental* unapproved edits.
 - Because of that, assert **execution** requires approval from your own
   machine: `charter approve` records trust in a per-user store **outside** the
-  repo (`~/.charter/trust`, keyed by the repo's absolute path). Nothing a repo
-  can ship — a committed sentinel, a forged in-repo marker, a tarball file —
-  can stand in for it. A freshly cloned repo will not execute its asserts until
-  you review CHARTER.md and approve it locally. (Earlier 0.4.0 betas kept this
-  marker inside the repo, where a committed copy could forge trust; 0.4.1 moved
-  it out of the tree.)
+  repo (`~/.charter/trust`, keyed by the repo's absolute path) and pins a
+  per-repo instance nonce stored in `.git` (uncommitted, fresh on every clone).
+  Nothing a repo can ship — a committed sentinel, a forged in-repo marker, a
+  tarball file — can stand in for it, and a *different* repo dropped at a
+  previously-approved path (delete + re-clone) does not inherit the approval
+  because its `.git` carries no matching nonce. A freshly cloned repo will not
+  execute its asserts until you review CHARTER.md and approve it locally.
+  (0.4.0 kept this marker inside the repo, where a committed copy could forge
+  trust; 0.4.1 moved it out of the tree; 0.4.2 added the instance nonce.
+  Non-git repos and git worktrees fall back to path + hash.)
 - CI is the exception you opt into deliberately: set
   `CHARTER_TRUST_ASSERTS=1` (or `check --trust`) only in CI you control, and
   treat a PR that modifies CHARTER.md with the same suspicion as a PR that

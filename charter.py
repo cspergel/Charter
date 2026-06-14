@@ -29,8 +29,9 @@ One tool, one doctrine, almost no state:
 State on disk: CHARTER.md (yours), .charter/ledger.jsonl (append-only),
 .charter/charter.sha (approval hash, committed). Assert execution requires
 local approval, recorded in a per-user trust store OUTSIDE the repo
-(~/.charter/trust, keyed by repo path) so nothing a repo ships can forge it.
-Zero dependencies.
+(~/.charter/trust, keyed by repo path) and pinned to a per-repo instance nonce
+in .git, so nothing a repo ships — and no repo later dropped at the same path —
+can forge it. Zero dependencies.
 
 CHARTER.md format — one line per decision:
 
@@ -55,7 +56,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 CHARTER_FILE = "CHARTER.md"
 STATE_DIR = ".charter"
 LEDGER = "ledger.jsonl"
@@ -424,27 +425,69 @@ def trust_key(rt: Path) -> str:
 def trust_path(rt: Path) -> Path:
     return trust_store_dir() / trust_key(rt)
 
+def instance_nonce(rt: Path):
+    """A per-repo-INSTANCE marker living inside .git (never committed, fresh on
+    every clone). It distinguishes 'the repo I approved' from 'a different repo
+    later dropped at the same path with the same CHARTER.md'. Returns None for
+    non-git repos and git worktrees (.git is a file), where instance binding
+    isn't available and trust falls back to path + hash."""
+    gd = rt / ".git"
+    if not gd.is_dir():
+        return None
+    nf = gd / "charter_instance"
+    try:
+        return nf.read_text(encoding="utf-8").strip() if nf.exists() else None
+    except OSError:
+        return None
+
+def ensure_instance_nonce(rt: Path):
+    cur = instance_nonce(rt)
+    if cur:
+        return cur
+    gd = rt / ".git"
+    if not gd.is_dir():
+        return None
+    import secrets
+    n = secrets.token_hex(16)
+    try:
+        (gd / "charter_instance").write_text(n + "\n", encoding="utf-8")
+    except OSError:
+        return None
+    return n
+
 def local_trust_ok(rt: Path) -> bool:
     """The committed sentinel proves SOMEONE approved this index — possibly the
     author of a repo you just cloned. Asserts are shell commands, so execution
     requires approval from THIS machine. The trust record lives in a per-user
     store OUTSIDE the repo, keyed by the repo's absolute path: nothing a repo
-    can ship (a committed file, a tarball) can stand in for it. A committed
-    `.charter/trusted` from the bad old design is now simply ignored."""
+    can ship (a committed file, a tarball) can stand in for it. The record also
+    pins a per-instance nonce (stored in .git), so a DIFFERENT repo later placed
+    at the same path with the same CHARTER.md does not inherit the approval.
+    A committed `.charter/trusted` from the bad old design is simply ignored."""
     if os.environ.get("CHARTER_TRUST_ASSERTS") == "1":
         return True
     tp = trust_path(rt)
     if not tp.exists():
         return False
     try:
-        return tp.read_text(encoding="utf-8").strip() == intent_hash(rt)
+        lines = tp.read_text(encoding="utf-8").splitlines()
     except OSError:
         return False
+    rec_hash = lines[0].strip() if lines else ""
+    rec_nonce = lines[1].strip() if len(lines) > 1 else None
+    if rec_hash != intent_hash(rt):
+        return False
+    if rec_nonce:
+        # trust was bound to a specific instance — require the same one
+        return instance_nonce(rt) == rec_nonce
+    return True  # legacy/non-git record: path + hash only
 
 def write_local_trust(rt: Path, h: str):
     d = trust_store_dir()
     d.mkdir(parents=True, exist_ok=True)
-    trust_path(rt).write_text(h + "\n", encoding="utf-8")
+    nonce = ensure_instance_nonce(rt)
+    body = h + "\n" + (nonce + "\n" if nonce else "")
+    trust_path(rt).write_text(body, encoding="utf-8")
 
 def cmd_approve(args):
     """The one human gate that matters: any change to CHARTER.md — annotator

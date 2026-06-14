@@ -538,6 +538,28 @@ def test_forged_in_repo_trust_marker_is_ignored(repo):
     assert not marker.exists()
 
 
+def test_trust_does_not_survive_repo_instance_replacement(repo):
+    """Trust is bound to a repo INSTANCE, not just its path + CHARTER.md hash.
+    A different repo dropped at the same path (e.g. delete + re-clone) with a
+    byte-identical CHARTER.md must NOT inherit the prior approval — even though
+    path and hash match — because it could ship altered assert helper scripts."""
+    marker = repo / "RAN"
+    (repo / "CHARTER.md").write_text(
+        f"[D-001] x -> assert: touch {marker.as_posix()} "
+        f"!! echo z | grep -q z\n", encoding="utf-8")
+    assert run(["approve", "--why", "instance A"], repo).returncode == 0
+    assert run(["check"], repo).returncode == 0
+    assert marker.exists()                       # the approved instance executed
+    marker.unlink()
+    # simulate a replacement instance at the same path: a fresh clone's .git
+    # carries no charter instance nonce (CHARTER.md/sentinel are unchanged)
+    (repo / ".git" / "charter_instance").unlink()
+    r = run(["check"], repo)
+    assert r.returncode == 1
+    assert "not from this machine" in r.stdout
+    assert not marker.exists()                   # stale path-trust must not execute
+
+
 def test_local_approve_grants_assert_execution(repo):
     settle(repo)
     import shutil
