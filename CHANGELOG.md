@@ -38,6 +38,16 @@ removal, and whole-file forgery are all caught (tampering requires rewriting the
 committed anchor too, i.e. a visible commit, same trust boundary as
 `charter.sha`).
 
+**Saboteur proposes the fix.** When `verify --adversarial` finds a bypass it now
+also proposes a hardened enforcer that closes it (diagnosis -> remedy), e.g. for
+Cargo it suggests matching the package both as a table key and a `package = "X"`
+value. The annotate prompt was also hardened to generate rename-resistant
+dependency asserts, narrower supervise watch scopes, and to sweep the doc
+exhaustively for greppable invariants. `explain` no longer mislabels an assert
+decision as "blind". (Driven by a full-lifecycle run on rust-analyzer, where the
+saboteur found 6/7 layering asserts bypassable via Cargo package-rename — graded
+B end-to-end by an independent judge.)
+
 **Pre-release stress test.** A multi-agent adversarial sweep of all of the
 above found and fixed: a Windows case-insensitive bypass of the state-file
 guard (`.Charter/...`), crashes on non-UTF-8 mutation content and non-object

@@ -166,6 +166,41 @@ def test_verify_adversarial_finds_bypass_and_restores(repo):
     assert not (repo / "notes.txt").exists()           # restored even on bypass
 
 
+def _dual_backend(repo, sab_payload, fix_payload):
+    """A CHARTER_LLM_CMD that returns the saboteur attack for an attack prompt
+    and the hardened-enforcer fix for a fix prompt (routed on 'BYPASSED', which
+    only the fix prompt contains)."""
+    script = repo / "_dual_backend.py"
+    script.write_text(
+        "import sys, json\np = sys.stdin.read()\n"
+        "print(json.dumps(%r if 'BYPASSED' in p else %r))\n"
+        % (fix_payload, sab_payload), encoding="utf-8")
+    return f'"{sys.executable}" "{script}"'
+
+
+def test_verify_adversarial_proposes_hardened_fix(repo):
+    """When the saboteur bypasses an enforcer, verify suggests a hardened one."""
+    _approve_assert_repo(repo)
+    backend = _dual_backend(
+        repo,
+        {"file": "notes.txt", "mode": "create", "content": "supabase\n",
+         "note": "outside the src/ scope"},
+        {"target": '! grep -rqE "supabase" .',
+         "tripwire": "echo supabase | grep -q supabase"})
+    r = run(["verify", "--adversarial"], repo, env={"CHARTER_LLM_CMD": backend})
+    assert r.returncode == 1
+    assert "BYPASS" in r.stdout
+    assert "suggested fix" in r.stdout and 'grep -rqE "supabase" .' in r.stdout
+
+
+def test_explain_no_blind_label_for_assert(repo):
+    (repo / "CHARTER.md").write_text(
+        '[D-001] x -> assert: ! grep -rq jwt src !! echo jwt | grep -q jwt\n',
+        encoding="utf-8")
+    r = run(["explain", "D-001"], repo)
+    assert "blind" not in r.stdout   # an assert with no citations is NOT blind
+
+
 def test_verify_requires_local_approval(repo):
     (repo / "CHARTER.md").write_text(
         '[D-001] x -> assert: ! grep -rqE "supabase" src !! echo supabase | grep -q supabase\n',

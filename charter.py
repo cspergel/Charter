@@ -593,6 +593,14 @@ and the reference is in a *.csproj — to forbid a package, check the *.csproj \
 PackageReference. The tripwire must feed a real declaration line, e.g. \
 `echo "add_dependency 'tilt'" | grep -qE "add_dependency ['\\"]tilt['\\"]"`.
 
+Where a manifest lets a dependency be RENAMED, match BOTH the table key AND the \
+real package value, or the rule is bypassable. Cargo is the prime case: \
+`foo = {{ package = "salsa" }}` pulls salsa under the key `foo`, so a bare \
+`^salsa` misses it. Use `! grep -qE '(^|\\.)salsa\\b|package *= *"salsa"' \
+crates/X/Cargo.toml` (matches `salsa` / `[dependencies.salsa]` / a renamed \
+`package = "salsa"`). The same applies to npm aliases (`"x": "npm:real@..."`) \
+and .NET `<PackageReference Include="X" />` vs an alias.
+
 A bare `test:`/`type:` FILE path only proves the file exists — it does NOT \
 prove the file covers the decision. So either bind the target to a real \
 `#symbol` that exercises the decision (a test function name, a class/type), \
@@ -609,10 +617,19 @@ could meaningfully VIOLATE.
 
 For assert enforcers, write a concrete, conservative POSIX shell command. \
 For a supervise decision, ALWAYS include an `@ <glob>` watch scope (in the \
-target field, e.g. "@ src/auth/**") naming the directory it governs — a \
-supervise decision with no jurisdiction fails check. Include a short verbatim \
-"anchor" quote (under 12 words) copied exactly from the document near where \
-the decision is stated, so the symbol can be inlined into the doc.
+target field) — but make it as NARROW as possible: the specific file(s) or \
+subdirectory that actually carries the invariant, e.g. \
+"@ src/parser/lib.rs" or "@ src/auth/session/**", NOT a whole package like \
+"@ crates/parser/**". A glob matching hundreds of files is noise, not \
+jurisdiction. Include a short verbatim "anchor" quote (under 12 words) copied \
+exactly from the document near where the decision is stated.
+
+Be EXHAUSTIVE about binding contracts: sweep the whole document for every \
+"never / always / must / only / not allowed / by default" statement, including \
+the less obvious greppable ones — banned constructs (e.g. `assert!` must not \
+appear in a crate, a forbidden import), required defaults, forbidden file-system \
+or network access in a layer — not just the headline few. Missing an \
+enforceable invariant is a worse failure than one extra tight decision.
 
 For EVERY assert enforcer, also provide a "tripwire": a one-line POSIX shell \
 probe that MUST exit 0, proving the detector can actually catch a known \
@@ -1002,6 +1019,33 @@ def _mutated(rt: Path, target: Path, body: bytes, mode: str):
                 pass
         _WALK_CACHE.clear()
 
+SABOTEUR_FIX_PROMPT = """An assert enforcer was just BYPASSED. Propose a \
+hardened replacement that catches BOTH the violations it was meant to catch AND \
+this specific bypass.
+
+DECISION: {title}
+CURRENT ENFORCER (bypassed): {target}
+THE BYPASS: wrote to `{file}` — {note}
+THE EVADING CONTENT:
+{content}
+
+Write a more robust POSIX-shell assert (still exits 0 on compliance). For \
+Cargo / package-manager manifests where a dependency can be RENAMED, match the \
+package both as a table key AND as a `package = "name"` value, e.g. \
+`! grep -qE '(^|\\.)salsa\\b|package *= *"salsa"' Cargo.toml`. Respond with ONLY \
+a JSON object, no fences: {{"target":"<hardened assert>",\
+"tripwire":"<probe that pipes the bypass sample into the new detector, exits 0>"}}"""
+
+def propose_hardened_enforcer(rt: Path, d: dict, m: dict):
+    """After a bypass, ask the LLM for a stronger enforcer that closes it."""
+    prompt = SABOTEUR_FIX_PROMPT.format(
+        title=d["title"], target=d["target"], file=m.get("file", ""),
+        note=m.get("note", ""), content=str(m.get("content", ""))[:500])
+    fix = extract_json(llm_call(prompt, AUDIT_MODEL, max_tokens=400))
+    if isinstance(fix, dict) and isinstance(fix.get("target"), str) and fix["target"].strip():
+        return fix
+    return None
+
 def saboteur_attack(rt: Path, d: dict):
     """Ask an LLM to craft a violation that evades this decision's enforcer."""
     prompt = SABOTEUR_PROMPT.format(title=d["title"], target=d["target"],
@@ -1099,6 +1143,10 @@ def cmd_verify(args):
                 print(f"  BYPASS {did} \"{d['title']}\"")
                 print(f"         the enforcer did NOT catch a real violation — "
                       f"wrote {m.get('file')}: {note}")
+                fix = propose_hardened_enforcer(rt, d, m)
+                if fix:
+                    tw = f" !! {fix['tripwire']}" if fix.get("tripwire") else ""
+                    print(f"         suggested fix -> assert: {fix['target']}{tw}")
             elif verdict == "defended":
                 print(f"  ok   {did} defended — caught the injected violation")
             else:
@@ -1550,7 +1598,7 @@ def cmd_explain(args):
             print(f"    {rel}:{i}")
     if prose:
         print(f"  mentioned in docs: " + ", ".join(sorted(set(r for r, _ in prose))))
-    if not cites[args.id] and not d["watch"]:
+    if d["kind"] == "supervise" and not cites[args.id] and not d["watch"]:
         print("  (no citations, no watch globs — this decision is blind)")
     # last audit verdict from the ledger
     lp = rt / STATE_DIR / LEDGER
