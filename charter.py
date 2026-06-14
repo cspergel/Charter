@@ -548,6 +548,12 @@ greps of source files that can match a comment or docstring. For "must not \
 depend on X", grep the dependency manifest — `! grep -iq "x" package.json` — \
 not source, where a passing mention of X in a comment would false-trip.
 
+A bare `test:`/`type:` FILE path only proves the file exists — it does NOT \
+prove the file covers the decision. So either bind the target to a real \
+`#symbol` that exercises the decision (a test function name, a class/type), \
+or — usually better — choose an `assert:` that greps the IMPLEMENTATION for \
+the behavior. Avoid file-only test targets; they pass vacuously.
+
 For assert enforcers, write a concrete, conservative POSIX shell command. \
 For a supervise decision, ALWAYS include an `@ <glob>` watch scope (in the \
 target field, e.g. "@ src/auth/**") naming the directory it governs — a \
@@ -746,6 +752,15 @@ def cmd_check(args):
             warnings.append(f"{did}'s tripwire is trivial "
                             f"(`{d['tripwire']}`) — it proves nothing; the "
                             f"assert may be vacuous")
+        # a test:/type: target with no #symbol that resolves to a FILE only
+        # proves the file exists, not that it covers the decision — green by
+        # omission. Nudge toward a #symbol or an assert (it stays live).
+        if (not p and d["kind"] in ("test", "type") and d["target"]
+                and "#" not in d["target"] and (rt / d["target"]).is_file()):
+            warnings.append(f"{did}: {d['kind']} target {d['target']} has no "
+                            f"#symbol — it proves the file exists, not that it "
+                            f"covers the decision; bind a #symbol or use an "
+                            f"assert")
     supervised = [d for d, v in decisions.items() if v["kind"] == "supervise"]
     if len(supervised) > args.budget:
         warnings.append(f"supervision budget exceeded: {len(supervised)} "

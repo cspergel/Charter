@@ -26,6 +26,11 @@ graded by an independent reviewer) drove two fixes:
   greps dependency manifests rather than comment-matchable source for
   "must-not-depend" rules, and attaches `@ watch` globs to supervise decisions.
   On click this moved the result from 2/10 enforcers live to 6/6.
+- **Coverage-blind enforcers are flagged.** A `test:`/`type:` target that names
+  only a file (no `#symbol`) proves the file exists, not that it covers the
+  decision — green by omission. `check` now warns on these and `annotate`
+  prefers a self-contained `assert:` or a symbol-bound target instead. On httpx
+  this dropped bare `test:` targets from 10 to 0 (now mostly asserts).
 
 ## v0.4.2 — trust bound to repo instance (adversarial review)
 

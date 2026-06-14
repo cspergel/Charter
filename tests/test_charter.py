@@ -401,6 +401,28 @@ def test_audit_reason_cannot_forge_verdict_lines(repo):
     assert not forged
 
 
+def test_check_warns_on_coverage_blind_test_enforcer(repo):
+    """A `test:`/`type:` target with no #symbol only proves the FILE exists, not
+    that it covers the decision (the httpx D-005 trap). check stays green but
+    warns; a symbol-bound target does not warn."""
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_x.py").write_text("def test_real(): pass\n",
+                                              encoding="utf-8")
+    (repo / "CHARTER.md").write_text(
+        "[D-001] covered -> test: tests/test_x.py\n", encoding="utf-8")
+    assert run(["approve", "--why", "t"], repo).returncode == 0
+    r = run(["check"], repo)
+    assert r.returncode == 0                       # file exists -> still live
+    assert "proves the file exists" in r.stdout    # ...but flagged as weak
+
+    # a symbol-bound target proves coverage -> no warning
+    (repo / "CHARTER.md").write_text(
+        "[D-001] covered -> test: tests/test_x.py#test_real\n", encoding="utf-8")
+    run(["approve", "--why", "t2"], repo)
+    r2 = run(["check"], repo)
+    assert r2.returncode == 0 and "proves the file exists" not in r2.stdout
+
+
 def test_type_enforcer_resolves_dotted_member_symbol(repo):
     """A `type: file#Class.method` target must resolve to the member's
     definition (`def method` / `class`), not require the literal dotted string
