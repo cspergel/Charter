@@ -53,6 +53,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+__version__ = "0.4.0"
 CHARTER_FILE = "CHARTER.md"
 STATE_DIR = ".charter"
 LEDGER = "ledger.jsonl"
@@ -1127,6 +1128,8 @@ def main():
                                 description="the design doc as charter: "
                                             "annotate -> enforce -> trace -> "
                                             "supervise")
+    p.add_argument("--version", action="version",
+                   version=f"charter {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init", help="create an empty CHARTER.md").set_defaults(fn=cmd_init)
 

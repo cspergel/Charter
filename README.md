@@ -34,17 +34,42 @@ Try it in 30 seconds: `sh demo/run_demo.sh` (on Windows, run it from Git
 Bash) — an agent adds Supabase to a local-first app and check catches it.
 No API key needed.
 
-## Install
+## Quick start
+
+See it work first — the demo is offline and needs no API key (on Windows,
+run it from Git Bash):
 
 ```bash
-pip install .          # gives you the `charter` command
-# — or just copy charter.py into your repo: it's one file, zero dependencies
-python charter.py check
+git clone https://github.com/cspergel/Charter
+cd Charter
+sh demo/run_demo.sh        # an agent adds Supabase to a local-first app; check catches it
 ```
 
-Python 3.10+. State on disk: `CHARTER.md` (yours), `.charter/ledger.jsonl`
-(append-only journal), `.charter/charter.sha` (approval hash — commit it),
-and `.charter/trusted` (local approval marker — never committed).
+Then use it on your own repo. There are two ways to run it:
+
+```bash
+# Option A — zero install. It's one file, zero dependencies (Python 3.10+).
+python /path/to/charter.py check
+
+# Option B — install the `charter` command.
+pip install .
+charter check
+```
+
+`annotate` (turning a prose doc into decisions) needs an LLM backend; point it
+at Claude Code with no API key required:
+
+```bash
+export CHARTER_LLM_CMD="claude -p"   # or set ANTHROPIC_API_KEY
+charter annotate SPEC.md
+charter approve --why "initial review"
+charter check
+charter doctor                       # checks your setup is sound
+```
+
+State on disk: `CHARTER.md` (yours), `.charter/ledger.jsonl` (append-only
+journal), `.charter/charter.sha` (approval hash — commit it), and
+`.charter/trusted` (local approval marker — never committed).
 
 ## Security, in one paragraph
 
