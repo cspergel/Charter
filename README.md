@@ -24,6 +24,12 @@ The agent fixes it. Nobody was interrupted, nothing was forgotten, and
 That's the whole idea: **executable design intent for AI-coded repos** —
 ADRs + linter + traceability, in one file with almost no state.
 
+> **Status: a proof of concept.** Charter is one file exploring a single idea —
+> that an architectural decision should be *executable*, not just documented.
+> It's deliberately small: no daemon, no service, no config sprawl. If the idea
+> resonates, the interesting work is hardening annotation quality and the
+> enforcer ladder — issues and PRs welcome.
+
 The doctrine in one sentence: **a decision with no jurisdiction is not
 governed.** Every decision names an enforcer; a supervise-only decision with
 neither code citations nor an `@` watch scope fails check. CHARTER.md is the
@@ -212,6 +218,25 @@ For non-hook agents (Cursor, aider), put this in `AGENTS.md`/`.cursorrules`:
 - **The graph navigates; enforcers govern.** `graph --json` exists for
   agents to ask "what connects to what," but no verdict ever comes from
   graph topology — authority lives in things that can't be argued with.
+
+## Where it fits
+
+The neighbors solve adjacent problems; none does Charter's loop:
+
+| | Governs | Who writes the rules | Enforced every commit? |
+|---|---|---|---|
+| **Spec-driven dev** (Spec Kit, OpenSpec, Kiro) | code *generation*, up front | you write the spec | no — out of the loop once code exists |
+| **Arch fitness functions** (ArchUnit, dependency-cruiser) | the codebase | you, by hand, in code | yes (per language) |
+| **ADR tools** (adr-tools, Log4brains) | a written record | you write the ADR | no — nothing checks the code |
+| **Charter** | the living repo | an LLM drafts, you approve | yes, deterministically |
+
+The gap Charter fills: it turns a *prose* decision into an enforced check, keeps
+the decision→code map current via citations, and does it without you
+hand-writing the rule — across any language, since the deterministic layer is
+just shell. Spec tools are upstream of the code; fitness functions need
+hand-written rules per stack; ADR tools document but never enforce. Use Charter
+*with* a spec tool if you like — scaffold generation with one, keep the repo
+true with the other.
 
 ## FAQ
 
