@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.4.1 — security + correctness (pre-release audit)
+
+A 5-lens audit before the public launch found two release blockers, both fixed
+here:
+
+- **Trust gate was forgeable (security).** In 0.4.0 the local trust marker
+  lived inside the repo (`.charter/trusted`) and its content was just the
+  approval hash — a value the repo author can compute. A committed or
+  force-added marker could therefore make a *cloned* repo execute its asserts
+  with no local review, the exact thing the gate exists to prevent. Trust now
+  lives in a per-user store **outside** the repo (`~/.charter/trust`, keyed by
+  repo path); nothing a repo ships can grant itself execution. A leftover
+  in-repo `trusted` marker is ignored.
+- **CRLF line endings broke approval across platforms.** `intent_hash` hashed
+  raw bytes, so a CHARTER.md approved on Windows (CRLF) failed `check` on Linux
+  CI (LF) as a false tamper. The hash now normalizes line endings.
+- **`extract_json` could hang** for minutes on adversarial backend output (a
+  long run of unclosed brackets was O(n²)); now bounded (~0.3s worst case).
+- Smaller fixes: non-executing rot checks (type/test/lint) now run on a
+  cloned-but-not-locally-trusted repo instead of being skipped; `.annotated`
+  copies no longer raise spurious "uncited governed file" warnings; the
+  pre-commit hook is written with LF newlines.
+
 ## v0.4.0 — publication hardening + rename
 
 - **Renamed: governor → charter.** The tool is `charter`, the index is

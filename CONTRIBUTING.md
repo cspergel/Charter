@@ -19,7 +19,7 @@ dependency is pytest.
 git clone https://github.com/cspergel/Charter
 cd Charter
 python -m pip install "pytest==8.*"
-python -m pytest tests/ -q          # 59 passed, 2 skipped
+python -m pytest tests/ -q          # 63 passed, 2 skipped on Windows; 65/0 on Linux CI
 sh demo/run_demo.sh                 # offline end-to-end (Git Bash on Windows)
 ```
 
@@ -37,8 +37,10 @@ and the POSIX demo golden test (skipped on Windows). Both run on Linux CI.
 - **Keep it one file, zero dependencies.** `charter.py` imports only the
   standard library. That constraint is a feature; please don't add runtime
   deps.
-- **Run the demo before opening a PR.** `sh demo/run_demo.sh` must stay green
-  and warning-free — it's the first thing a new user sees.
+- **Run the demo before opening a PR.** `sh demo/run_demo.sh` must stay green —
+  it's the first thing a new user sees. (Step 4 intentionally prints one
+  `WARN uncited governed file …` — that's the demo catching a violation, not a
+  regression. No other warnings should appear.)
 
 ## A note on the test backend (Windows gotcha)
 

@@ -27,8 +27,10 @@ One tool, one doctrine, almost no state:
                 cite the symbol, keep the build green.
 
 State on disk: CHARTER.md (yours), .charter/ledger.jsonl (append-only),
-.charter/charter.sha (approval hash, committed) and .charter/trusted
-(local approval marker, never committed). Zero dependencies.
+.charter/charter.sha (approval hash, committed). Assert execution requires
+local approval, recorded in a per-user trust store OUTSIDE the repo
+(~/.charter/trust, keyed by repo path) so nothing a repo ships can forge it.
+Zero dependencies.
 
 CHARTER.md format — one line per decision:
 
@@ -53,7 +55,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 CHARTER_FILE = "CHARTER.md"
 STATE_DIR = ".charter"
 LEDGER = "ledger.jsonl"
@@ -74,10 +76,11 @@ TEXT_EXT = {".py", ".js", ".ts", ".tsx", ".jsx", ".mjs", ".cjs", ".vue",
 # decisions alive and don't define audit jurisdiction)
 CODE_EXT = TEXT_EXT - {".md", ".txt"}
 SENTINEL = "charter.sha"
-TRUSTED = "trusted"   # local-only approval marker — never committed
 MAX_SCAN_BYTES = 1_000_000
 MAX_LLM_BYTES = 2_000_000   # cap backend stdout / API body read
 AUDIT_FILE_CAP = 60         # max files judged per decision (bounds LLM calls)
+MAX_JSON_CANDIDATES = 4000  # bound extract_json work on adversarial backend output
+MAX_JSON_DEPTH = 1000       # abandon a candidate whose nesting is absurd
 
 def glob_match(rel: str, pattern: str) -> bool:
     """Correct ** semantics: ** crosses directories, * does not.
@@ -167,9 +170,13 @@ def extract_json(raw):
     bracketed text like [D-001] earlier in the reply."""
     if not raw:
         return None
+    tried = 0
     for start in range(len(raw)):
         if raw[start] not in "[{":
             continue
+        tried += 1
+        if tried > MAX_JSON_CANDIDATES:
+            break  # adversarial bracket spam — don't scan O(n^2)
         stack, in_str, esc = [], False, False
         for i in range(start, len(raw)):
             c = raw[i]
@@ -178,7 +185,10 @@ def extract_json(raw):
                 elif c == "\\": esc = True
                 elif c == '"': in_str = False
             elif c == '"': in_str = True
-            elif c in "[{": stack.append("]" if c == "[" else "}")
+            elif c in "[{":
+                stack.append("]" if c == "[" else "}")
+                if len(stack) > MAX_JSON_DEPTH:
+                    break  # absurd nesting; abandon this start
             elif c in "]}":
                 if not stack or c != stack.pop():
                     break  # mismatched nesting; abandon this start
@@ -377,13 +387,18 @@ def watched_files(rt: Path, watch: list):
     if not watch:
         return []
     return [rel for rel, _ in repo_files(rt)
-            if rel != CHARTER_FILE and any(glob_match(rel, g) for g in watch)]
+            if rel != CHARTER_FILE and ".annotated" not in rel
+            and any(glob_match(rel, g) for g in watch)]
 
 # -------------------------------------------------------- tamper sentinel
 
 def intent_hash(rt: Path) -> str:
     import hashlib
     body = (rt / CHARTER_FILE).read_bytes() if (rt / CHARTER_FILE).exists() else b""
+    # normalize line endings so a hash made on Windows (CRLF) matches the same
+    # file checked out on Linux/CI (LF) — otherwise approve-here/check-there
+    # fails as a false tamper without any edit
+    body = body.replace(b"\r\n", b"\n")
     return hashlib.sha256(body).hexdigest()[:16]
 
 def sentinel_path(rt: Path) -> Path:
@@ -395,14 +410,27 @@ def sentinel_ok(rt: Path):
         return None  # never approved
     return sp.read_text(encoding="utf-8").strip() == intent_hash(rt)
 
+def trust_store_dir() -> Path:
+    """Per-user trust store, OUTSIDE any repo. CHARTER_HOME overrides the base
+    (used by tests; honors a deliberate relocation)."""
+    base = os.environ.get("CHARTER_HOME")
+    base = Path(base) if base else Path.home()
+    return base / ".charter" / "trust"
+
+def trust_key(rt: Path) -> str:
+    import hashlib
+    return hashlib.sha256(str(rt.resolve()).encode("utf-8")).hexdigest()[:32]
+
 def trust_path(rt: Path) -> Path:
-    return rt / STATE_DIR / TRUSTED
+    return trust_store_dir() / trust_key(rt)
 
 def local_trust_ok(rt: Path) -> bool:
-    """The committed sentinel proves SOMEONE approved this index — possibly
-    the author of a repo you just cloned. Asserts are shell commands, so
-    execution requires approval from THIS machine: a local marker written
-    only by `charter approve` here, or an explicit CI opt-in."""
+    """The committed sentinel proves SOMEONE approved this index — possibly the
+    author of a repo you just cloned. Asserts are shell commands, so execution
+    requires approval from THIS machine. The trust record lives in a per-user
+    store OUTSIDE the repo, keyed by the repo's absolute path: nothing a repo
+    can ship (a committed file, a tarball) can stand in for it. A committed
+    `.charter/trusted` from the bad old design is now simply ignored."""
     if os.environ.get("CHARTER_TRUST_ASSERTS") == "1":
         return True
     tp = trust_path(rt)
@@ -414,13 +442,9 @@ def local_trust_ok(rt: Path) -> bool:
         return False
 
 def write_local_trust(rt: Path, h: str):
-    d = rt / STATE_DIR
-    d.mkdir(exist_ok=True)
+    d = trust_store_dir()
+    d.mkdir(parents=True, exist_ok=True)
     trust_path(rt).write_text(h + "\n", encoding="utf-8")
-    # keep the marker out of git even if the user commits .charter/ wholesale
-    gi = d / ".gitignore"
-    if not gi.exists():
-        gi.write_text(TRUSTED + "\n", encoding="utf-8")
 
 def cmd_approve(args):
     """The one human gate that matters: any change to CHARTER.md — annotator
@@ -594,16 +618,21 @@ def cmd_check(args):
             f"`charter approve --why \"reviewed\"`; in CI you control, set "
             f"CHARTER_TRUST_ASSERTS=1 or pass --trust")
     warnings = []
-    # NEVER run enforcers (which execute assert shell commands) from an
-    # unapproved, tampered, or merely-cloned index — that would let a
-    # smuggled assert run before anyone reviews it.
+    # assert enforcers EXECUTE shell from CHARTER.md, so they run only when the
+    # index is locally trusted. Non-executing checks (type/test/lint/structure
+    # symbol presence) only read files, so they run on any approved index —
+    # including a cloned-but-not-locally-trusted one, to still catch rot.
+    run_nonexec = (s is True)
     for did, d in decisions.items():
-        if not trusted:
-            break
+        is_assert = d["kind"] == "assert"
+        if is_assert and not trusted:
+            continue  # never run a smuggled/unreviewed assert
+        if not is_assert and not run_nonexec:
+            continue  # unapproved/tampered: the approval problem already stands
         p = verify_enforcer(rt, d)
         if p:
             problems.append(f"{did} \"{d['title']}\" — {p}")
-        if d["kind"] == "assert" and trivial_tripwire(d.get("tripwire", "")):
+        if is_assert and trivial_tripwire(d.get("tripwire", "")):
             warnings.append(f"{did}'s tripwire is trivial "
                             f"(`{d['tripwire']}`) — it proves nothing; the "
                             f"assert may be vacuous")
@@ -1095,10 +1124,11 @@ def cmd_install_hook(args):
                 return
             # don't clobber an existing hook (husky, pre-commit, ...) — append
             hp.write_text(body.rstrip("\n") + "\n" + gov_line + "\n",
-                          encoding="utf-8")
+                          encoding="utf-8", newline="\n")
             print(f"appended charter check to existing {hp}")
         else:
-            hp.write_text(f"#!/bin/sh\n{gov_line}\n", encoding="utf-8")
+            hp.write_text(f"#!/bin/sh\n{gov_line}\n",
+                          encoding="utf-8", newline="\n")
             print(f"installed {hp}")
         try:
             os.chmod(hp, 0o755)

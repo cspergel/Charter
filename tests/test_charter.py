@@ -14,8 +14,15 @@ import charter as g  # noqa: E402
 GOV = [sys.executable, str(HERE.parent / "charter.py")]
 
 
+def trust_home(repo):
+    """The per-user trust store base for a test repo — kept OUTSIDE the repo
+    (a sibling dir) so the subprocess writes nowhere near the real ~/.charter
+    and the repo's own file walk never sees it."""
+    return Path(str(repo) + ".charterhome")
+
+
 def run(args, cwd, env=None, stdin=""):
-    e = {**os.environ, **(env or {})}
+    e = {**os.environ, "CHARTER_HOME": str(trust_home(Path(cwd))), **(env or {})}
     return subprocess.run(GOV + args, cwd=cwd, capture_output=True,
                           text=True, env=e, timeout=120, input=stdin)
 
@@ -66,6 +73,13 @@ def test_extract_json_recovers_from_mismatched_nesting():
 def test_extract_json_none_cases():
     assert g.extract_json("") is None
     assert g.extract_json("no json here") is None
+
+
+def test_extract_json_does_not_hang_on_bracket_spam():
+    import time
+    t0 = time.time()
+    assert g.extract_json("[" * 200_000) is None
+    assert time.time() - t0 < 2.0
 
 
 def test_parse_intent_full_line(repo):
@@ -388,11 +402,14 @@ def test_audit_reason_cannot_forge_verdict_lines(repo):
 
 
 def test_self_certifying_tripwire_is_flagged(repo):
+    # assert passes (grep of a present file), so the only thing that can flag
+    # this is trivial_tripwire firing — no exit-code escape hatch
+    (repo / "src" / "auth" / "x.py").write_text("ok\n")
     (repo / "CHARTER.md").write_text(
-        "[D-001] vacuous -> assert: ! grep -rq zz missing !! true\n")
+        "[D-001] vacuous -> assert: ! grep -rq zz src/auth/x.py !! true\n")
     run(["approve", "--why", "t"], repo)
     r = run(["check"], repo)
-    assert "trivial" in (r.stdout + r.stderr).lower() or r.returncode == 1
+    assert "tripwire is trivial" in r.stdout
 
 
 # -- robustness -----------------------------------------------------------
@@ -501,26 +518,68 @@ def test_cloned_preapproved_repo_does_not_execute_asserts(repo):
     assert not marker.exists()
 
 
+def test_forged_in_repo_trust_marker_is_ignored(repo):
+    """The v0.4.0 hole: a repo could ship a `.charter/trusted` whose content is
+    the (author-computable) intent hash and get its asserts executed on clone.
+    Trust now lives in a per-user store outside the repo; an in-repo marker —
+    even a perfectly-formed one — must grant nothing."""
+    marker = repo / "PWNED"
+    (repo / "CHARTER.md").write_text(
+        f"[D-001] evil -> assert: touch {marker.as_posix()} "
+        f"!! echo x | grep -q x\n", encoding="utf-8")
+    d = repo / ".charter"
+    d.mkdir()
+    (d / "charter.sha").write_text(g.intent_hash(repo) + "\n", encoding="utf-8")
+    # attacker forges the old-style in-repo marker with the correct hash
+    (d / "trusted").write_text(g.intent_hash(repo) + "\n", encoding="utf-8")
+    r = run(["check"], repo)
+    assert r.returncode == 1
+    assert "not from this machine" in r.stdout
+    assert not marker.exists()
+
+
 def test_local_approve_grants_assert_execution(repo):
     settle(repo)
-    g.trust_path(repo).unlink()          # simulate a fresh clone
+    import shutil
+    shutil.rmtree(trust_home(repo), ignore_errors=True)   # simulate a fresh clone
     r = run(["check"], repo)
     assert r.returncode == 1 and "not from this machine" in r.stdout
     assert run(["approve", "--why", "reviewed after clone"], repo).returncode == 0
     assert run(["check"], repo).returncode == 0
 
 
+def test_approve_writes_trust_outside_the_repo(repo):
+    """The trust record must never land inside the repo tree (where it could be
+    committed); it goes to the per-user store keyed by repo path."""
+    settle(repo)
+    assert not (repo / ".charter" / "trusted").exists()
+    store = trust_home(repo) / ".charter" / "trust"
+    assert store.is_dir() and any(store.iterdir())
+
+
 def test_trust_optins_execute_asserts(repo):
     settle(repo)
-    g.trust_path(repo).unlink()
+    import shutil
+    shutil.rmtree(trust_home(repo), ignore_errors=True)
     assert run(["check"], repo, env={"CHARTER_TRUST_ASSERTS": "1"}).returncode == 0
     assert run(["check", "--trust"], repo).returncode == 0
 
 
-def test_approve_writes_gitignore_for_trust_marker(repo):
-    settle(repo)
-    gi = repo / ".charter" / ".gitignore"
-    assert gi.exists() and "trusted" in gi.read_text(encoding="utf-8")
+def test_crlf_charter_hashes_same_as_lf(repo):
+    """approve on Windows (CRLF) must match check on Linux (LF) — the hash
+    normalizes line endings so it isn't a false tamper."""
+    body = "[D-001] x -> supervise @ src/**\n"
+    (repo / "CHARTER.md").write_text(body, encoding="utf-8", newline="\n")
+    lf = g.intent_hash(repo)
+    (repo / "CHARTER.md").write_text(body, encoding="utf-8", newline="\r\n")
+    crlf = g.intent_hash(repo)
+    assert lf == crlf
+
+
+def test_version_flag_matches_constant(repo):
+    r = run(["--version"], repo)
+    assert r.returncode == 0
+    assert r.stdout.strip() == f"charter {g.__version__}"
 
 
 def test_echo_pipeline_tripwire_is_not_trivial():

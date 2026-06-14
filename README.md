@@ -68,15 +68,18 @@ charter doctor                       # checks your setup is sound
 ```
 
 State on disk: `CHARTER.md` (yours), `.charter/ledger.jsonl` (append-only
-journal), `.charter/charter.sha` (approval hash — commit it), and
-`.charter/trusted` (local approval marker — never committed).
+journal), and `.charter/charter.sha` (approval hash — commit it). Permission to
+*execute* asserts is recorded in a per-user trust store **outside** the repo
+(`~/.charter/trust`, keyed by repo path), so nothing a repo ships can grant
+itself execution.
 
 ## Security, in one paragraph
 
 `charter check` executes shell commands defined in CHARTER.md (the assert
-enforcers). A freshly cloned repo will **not** execute its asserts — even if
-it ships an approval hash — until you review CHARTER.md and run
-`charter approve` yourself; CI opts in explicitly with
+enforcers). A freshly cloned repo will **not** execute its asserts — even if it
+ships an approval hash, and even if it ships a forged trust marker — until you
+review CHARTER.md and run `charter approve` yourself, because the trust record
+lives in a per-user store outside the repo. CI opts in explicitly with
 `CHARTER_TRUST_ASSERTS=1`. `annotate`/`audit` send doc and file contents to
 your configured LLM backend; nothing else makes network calls. Details and
 threat model: [SECURITY.md](SECURITY.md).
