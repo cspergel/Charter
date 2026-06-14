@@ -52,7 +52,8 @@ Then use it on your own repo. There are two ways to run it:
 python /path/to/charter.py check
 
 # Option B — install the `charter` command.
-pip install .
+pip install charter-intent   # the command is `charter`; `charter` was taken on PyPI
+# — or from a local checkout: pip install .
 charter check
 ```
 

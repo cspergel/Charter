@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "charter"
+name = "charter-intent"   # `charter` is reserved on PyPI; the command is still `charter`
 version = "0.4.2"
 description = "Executable design intent for AI-coded repos: the design document becomes the charter."
 readme = "README.md"
