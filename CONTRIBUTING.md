@@ -10,6 +10,19 @@ it extracts are any good. Annotation quality is the part most worth hardening,
 and the failure cases are hard to find without real docs. A pasted CHARTER.md
 that came out wrong is a great issue.
 
+## Or: harden a rule the saboteur broke
+
+Run `charter verify --adversarial` on a repo you govern. When the saboteur
+reports a `BYPASS`, it's handing you a self-checking task: tighten the enforcer
+(or the `annotate` prompt that generated it) until the saboteur can no longer
+slip past. That makes for a great PR, because the acceptance test is built in —
+*it used to bypass this rule, now it can't.*
+
+Good first issues (bounded, clear acceptance): **#7** (comment-aware grep) and
+**#4** (bind `test:` enforcers to a `#symbol`). Meatier: **#5** (language-aware
+symbol resolution) and **#1 / #2** (annotation recall and enforcer-rung
+selection).
+
 ## Dev setup
 
 Charter is a single file with zero runtime dependencies. The only dev
@@ -19,7 +32,7 @@ dependency is pytest.
 git clone https://github.com/cspergel/Charter
 cd Charter
 python -m pip install "pytest==8.*"
-python -m pytest tests/ -q          # 64 passed, 2 skipped on Windows; 66/0 on Linux CI
+python -m pytest tests/ -q          # 85 passed, 2 skipped on Windows (the 2 run on Linux CI)
 sh demo/run_demo.sh                 # offline end-to-end (Git Bash on Windows)
 ```
 
