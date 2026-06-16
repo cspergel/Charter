@@ -1,8 +1,6 @@
-# charter — the design document becomes the charter
+# charter — checks your code against your design doc, then tries to beat its own checks
 
-Your design doc says:
-
-> Auth tokens are HMAC, never JWT.
+You write your design decisions in prose — "auth tokens are HMAC, never JWT," "the domain layer can't import the web layer." An LLM turns each one into a one-line deterministic check, you approve that file like code, and from then on `charter check` enforces it with no LLM involved.
 
 ```bash
 $ charter annotate SPEC.md      # LLM turns prose into enforceable decisions
@@ -11,30 +9,21 @@ $ cat CHARTER.md
 $ charter approve --why "initial review"
 ```
 
-Weeks later, an AI agent adds JWT code.
+Weeks later an agent adds JWT code, and `charter check` catches it:
 
 ```bash
 $ charter check
   FAIL D-001 "Auth tokens are HMAC, never JWT" — assert FAILED
 ```
 
-The agent fixes it. Nobody was interrupted, nothing was forgotten, and
-`charter trace D-001` shows every file that implements the decision.
+The part worth showing is `charter verify --adversarial`. It's an LLM that tries to beat your own checks: it plants a real violation where the grep won't look — a different path, a synonym, another file type — on a sandboxed copy it always restores, and tells you which checks it got past. Then it suggests a tighter one. I ran it on rust-analyzer and it slipped past 6 of 7 layering rules with a Cargo package-rename trick. Those were rules I thought were enforcing something.
 
-That's the whole idea: **executable design intent for AI-coded repos** —
-ADRs + linter + traceability, in one file with almost no state.
+So that's the idea: keep an AI-coded repo true to the decisions you already made — design doc in, enforced checks out, with an adversary that tells you which checks are real.
 
-> **Status: a proof of concept.** Charter is one file exploring a single idea —
-> that an architectural decision should be *executable*, not just documented.
-> It's deliberately small: no daemon, no service, no config sprawl. If the idea
-> resonates, the interesting work is hardening annotation quality and the
-> enforcer ladder — issues and PRs welcome.
-
-The doctrine in one sentence: **a decision with no jurisdiction is not
-governed.** Every decision names an enforcer; a supervise-only decision with
-neither code citations nor an `@` watch scope fails check. CHARTER.md is the
-constitution, `check` is the court, `audit` is the judge for gray areas, and
-`[D-xxx]` citations are the map.
+> **Status: a weekend project / proof of concept.** One file, one idea — that an
+> architectural decision should be *executable*, not just documented. No daemon,
+> no service, no config sprawl. The interesting work from here is hardening
+> annotation quality and the enforcer ladder — issues and PRs welcome.
 
 Try it in 30 seconds: `sh demo/run_demo.sh` (on Windows, run it from Git
 Bash) — an agent adds Supabase to a local-first app and check catches it.
@@ -234,10 +223,12 @@ deterministic decision is actually enforceable against your code *right now*.
 slip a real violation past each enforcer — hiding it in a path the grep
 doesn't scan, a synonym the pattern misses, a different file type — on a
 sandboxed copy that's always restored. Anything it gets through is reported as
-a **bypass**, with the exact evasion. Run on this project's own sibling tool it
-bypassed 3 of 5 enforcers (e.g. a "no network calls" rule that only grepped
-`requests|httpx|urllib` — `http.client` walked right past). It's governance
-that attacks itself, so "is this rule real or just theater?" has an answer.
+a **bypass**, with the exact evasion, and it proposes a tighter enforcer that
+closes the hole. On rust-analyzer it bypassed 6 of 7 layering rules with a
+Cargo package-rename trick; on this project's own sibling tool, 3 of 5 (a "no
+network calls" rule only grepped `requests|httpx|urllib`, so `http.client`
+walked right past). Governance that attacks itself — so "is this rule real or
+just theater?" has an answer.
 
 ## Where it fits
 
@@ -303,8 +294,9 @@ hand — `check` never calls a model.
 ## Known limits
 
 - **Sweet spot: a repo with a real design/architecture doc.** Baseline-tested
-  across Flask, httpx, click, prettier, rust-analyzer, the GitHub CLI, okhttp,
-  and Deno. It does best when the doc states binding "never/always/default"
+  across 9 OSS repos in 7 languages — Flask, httpx, prettier, rust-analyzer, the
+  GitHub CLI, okhttp, Deno, curl, and Polly. It does best when the doc states
+  binding "never/always/default"
   decisions; it degrades on (a) repos with no design doc — pointed at a how-to
   guide it tends to extract file-existence trivia, (b) very large monorepos,
   and (c) deep language-specific symbol/dependency layouts (Go package symbols,
