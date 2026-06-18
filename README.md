@@ -20,6 +20,8 @@ The part worth showing is `charter verify --adversarial`. It's an LLM that tries
 
 So that's the idea: keep an AI-coded repo true to the decisions you already made — design doc in, enforced checks out, with an adversary that tells you which checks are real.
 
+Charter governs itself, too: its own binding decisions live in `CHARTER.md`, and CI runs `charter check` on every push. The first time I pointed the saboteur at its own rules it bypassed two of them — the "zero dependencies" check only scanned one manifest file — so I hardened them (the important one is now a test). A tool that can't pass its own enforcement has no business enforcing yours.
+
 > **Status: a weekend project / proof of concept.** One file, one idea — that an
 > architectural decision should be *executable*, not just documented. No daemon,
 > no service, no config sprawl. The interesting work from here is hardening
