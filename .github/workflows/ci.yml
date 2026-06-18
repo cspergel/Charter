@@ -21,3 +21,8 @@ jobs:
       - run: pytest tests/ -q
       - run: pip install .
       - run: charter --help
+      # Charter governs Charter: its own CHARTER.md must stay enforceable.
+      - name: charter governs charter
+        env:
+          CHARTER_TRUST_ASSERTS: "1"
+        run: charter check

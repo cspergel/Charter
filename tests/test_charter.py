@@ -1,6 +1,7 @@
 """charter test suite — run with: pytest tests/ -q"""
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -898,3 +899,108 @@ def test_echo_pipeline_tripwire_is_not_trivial():
     assert g.trivial_tripwire("printf x")
     assert g.trivial_tripwire("true")
     assert g.trivial_tripwire(":")
+
+
+# --- D-001: zero runtime dependencies (promoted from a grep assert to a test
+# after the saboteur bypassed the single-manifest grep with a Poetry table) ---
+
+_REQ_LINE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*\s*([<>=!~]=?|@|;|\[|$)')
+
+
+def _declared_runtime_deps(root):
+    """Every runtime dependency declared under `root`, across manifest formats,
+    as (source, raw) pairs. Empty == the zero-dependency invariant holds.
+    Format-agnostic on purpose: the saboteur showed a single-manifest grep is
+    bypassable by switching packaging style, so this scans requirements*.txt,
+    PEP-621 arrays, Poetry tables, setup.py/cfg install_requires, and Pipfile.
+    Dev/optional extras and the Poetry `python` constraint are not runtime
+    deps and are deliberately ignored."""
+    root = Path(root)
+    found = []
+
+    for req in sorted(root.glob("requirements*.txt")):
+        for line in req.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if s and not s.startswith(("#", "-")) and _REQ_LINE.match(s):
+                found.append((req.name, s))
+
+    pp = root / "pyproject.toml"
+    if pp.exists():
+        in_pep621 = in_poetry = False
+        for line in pp.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if s.startswith("["):
+                in_poetry = s == "[tool.poetry.dependencies]"
+                in_pep621 = False
+                continue
+            if re.match(r'^dependencies\s*=\s*\[', s):
+                rest = s.split("[", 1)[1]
+                if re.search(r'["\']', rest):
+                    found.append(("pyproject.toml (PEP 621)", s))
+                in_pep621 = "]" not in rest
+                continue
+            if in_pep621:
+                if re.search(r'["\']', s):
+                    found.append(("pyproject.toml (PEP 621)", s))
+                if "]" in s:
+                    in_pep621 = False
+                continue
+            if in_poetry and "=" in s and not s.startswith("#"):
+                key = s.split("=", 1)[0].strip()
+                if key and key != "python":
+                    found.append(("pyproject.toml (Poetry)", s))
+
+    for name in ("setup.py", "setup.cfg"):
+        sf = root / name
+        if sf.exists():
+            m = re.search(r'install_requires\s*=\s*\[([^\]]*)\]',
+                          sf.read_text(encoding="utf-8"), re.S)
+            if m and re.search(r'["\']', m.group(1)):
+                found.append((name, "install_requires"))
+
+    pf = root / "Pipfile"
+    if pf.exists():
+        in_pkgs = False
+        for line in pf.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if s.startswith("["):
+                in_pkgs = s == "[packages]"
+                continue
+            if in_pkgs and "=" in s and not s.startswith("#"):
+                found.append(("Pipfile", s))
+
+    return found
+
+
+def test_zero_runtime_dependencies():
+    """D-001: Charter declares no runtime dependency in any manifest format."""
+    deps = _declared_runtime_deps(HERE.parent)
+    assert deps == [], f"unexpected runtime dependencies declared: {deps}"
+
+
+def test_zero_runtime_dependencies_detector_is_not_vacuous(tmp_path):
+    """The tripwire, in test form: the detector must actually catch a dep in
+    each packaging style (otherwise the invariant could pass forever) — and
+    must NOT flag a Poetry `python` constraint, which isn't a runtime dep."""
+    req = tmp_path / "requirements.txt"
+    req.write_text("requests>=2.31.0\n", encoding="utf-8")
+    assert _declared_runtime_deps(tmp_path), "missed a requirements.txt dep"
+    req.unlink()
+
+    pp = tmp_path / "pyproject.toml"
+    pp.write_text('[project]\nname = "x"\ndependencies = ["requests>=2.31"]\n',
+                  encoding="utf-8")
+    assert _declared_runtime_deps(tmp_path), "missed a PEP-621 array dep"
+
+    pp.write_text('[tool.poetry.dependencies]\npython = "^3.10"\nrequests = "^2.31"\n',
+                  encoding="utf-8")
+    assert _declared_runtime_deps(tmp_path), "missed a Poetry-table dep"
+
+    pp.write_text('[tool.poetry.dependencies]\npython = "^3.10"\n', encoding="utf-8")
+    assert _declared_runtime_deps(tmp_path) == [], "python constraint wrongly flagged"
+    pp.unlink()
+
+    (tmp_path / "setup.py").write_text(
+        'from setuptools import setup\nsetup(install_requires=["requests"])\n',
+        encoding="utf-8")
+    assert _declared_runtime_deps(tmp_path), "missed a setup.py install_requires"
